@@ -60,6 +60,19 @@ func TestShifts(t *testing.T) {
 	}
 }
 
+// An oriented picture is never a window on the decoder's planes, which are not turned.
+func TestRenderTurnsWhatItReturnsAsDecoded(t *testing.T) {
+	defer guard(t)
+	pic := synth(8, 6, 4, 3, 1)
+	img, err := render(pic, nil, placement{o: oSwap})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := img.Bounds(); b.Dx() != 6 || b.Dy() != 8 {
+		t.Errorf("turned picture is %v, want 6x8", b)
+	}
+}
+
 func TestRenderRefusals(t *testing.T) {
 	defer guard(t)
 	// chroma planes of an unusual size

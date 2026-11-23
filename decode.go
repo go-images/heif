@@ -157,10 +157,7 @@ func (f *file) isAlphaItem(id uint32) bool {
 	if aux == nil {
 		return false
 	}
-	ps, err := f.propsOf(aux)
-	if err != nil {
-		return false
-	}
+	ps, _ := f.propsOf(aux) // a list that cannot be read names no alpha plane
 	a := find(ps, "auxC")
 	return a != nil && isAlphaURN(a.auxType)
 }
@@ -177,9 +174,7 @@ func (f *file) parseGrid(it *item, ps []*property) (*grid, error) {
 		if sz == nil || len(to) == 0 || sz.w == 0 || sz.h == 0 {
 			return nil, fmt.Errorf("%w: grid %d without a size or tiles", ErrInvalid, it.id)
 		}
-		if uint64(sz.w)*uint64(sz.h) > uint64(f.lim.MaxPixels) {
-			return nil, fmt.Errorf("%w: grid of %dx%d", ErrImageTooLarge, sz.w, sz.h)
-		}
+		// (the pixel bound is applied to the size of every item by resolve)
 		t := f.byID[to[0]]
 		if t == nil || t.typ != "hvc1" {
 			return nil, fmt.Errorf("%w: grid %d tile %d is not an hvc1 item", ErrUnsupported, it.id, to[0])
