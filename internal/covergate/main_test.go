@@ -31,7 +31,7 @@ func TestRun(t *testing.T) {
 		{"missed", []string{write("b", "mode: set\nx.go:1.1,2.2 3 1\nx.go:3.1,4.2 2 0\n")}, 1, "2 of 5", ""},
 		{"no args", nil, 2, "", "usage:"},
 		{"two args", []string{"a", "b"}, 2, "", "usage:"},
-		{"missing", []string{filepath.Join(dir, "none")}, 2, "", "no such file"},
+		{"missing", []string{filepath.Join(dir, "none")}, 2, "", "none"}, // the OS words the rest differently
 		{"no mode", []string{write("c", "x.go:1.1,2.2 3 1\n")}, 2, "", "not a coverage profile"},
 		{"empty", []string{write("d", "")}, 2, "", "empty profile"},
 		{"short line", []string{write("e", "mode: set\nx.go 3\n")}, 2, "", "bad line"},
