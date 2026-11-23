@@ -25,21 +25,33 @@ func TestRun(t *testing.T) {
 		args []string
 		want int
 		out  string
+		msg  string // what stderr must hold
 	}{
-		{"covered", []string{write("a", "mode: set\nx.go:1.1,2.2 3 1\nx.go:3.1,4.2 2 5\n")}, 0, "0 of 5"},
-		{"missed", []string{write("b", "mode: set\nx.go:1.1,2.2 3 1\nx.go:3.1,4.2 2 0\n")}, 1, "2 of 5"},
-		{"no args", nil, 2, ""},
-		{"missing", []string{filepath.Join(dir, "none")}, 2, ""},
-		{"no mode", []string{write("c", "x.go:1.1,2.2 3 1\n")}, 2, ""},
-		{"empty", []string{write("d", "")}, 2, ""},
-		{"short line", []string{write("e", "mode: set\nx.go 3\n")}, 2, ""},
-		{"bad count", []string{write("f", "mode: set\nx.go:1.1,2.2 a 1\n")}, 2, ""},
-		{"bad hits", []string{write("g", "mode: set\nx.go:1.1,2.2 3 b\n")}, 2, ""},
-		{"long line", []string{write("h", "mode: set\n"+strings.Repeat("x", 1<<20)+"\n")}, 2, ""},
+		{"covered", []string{write("a", "mode: set\nx.go:1.1,2.2 3 1\nx.go:3.1,4.2 2 5\n")}, 0, "0 of 5", ""},
+		{"missed", []string{write("b", "mode: set\nx.go:1.1,2.2 3 1\nx.go:3.1,4.2 2 0\n")}, 1, "2 of 5", ""},
+		{"no args", nil, 2, "", "usage:"},
+		{"two args", []string{"a", "b"}, 2, "", "usage:"},
+		{"missing", []string{filepath.Join(dir, "none")}, 2, "", "no such file"},
+		{"no mode", []string{write("c", "x.go:1.1,2.2 3 1\n")}, 2, "", "not a coverage profile"},
+		{"empty", []string{write("d", "")}, 2, "", "empty profile"},
+		{"short line", []string{write("e", "mode: set\nx.go 3\n")}, 2, "", "bad line"},
+		{"long line", []string{write("e2", "mode: set\nx.go 3 1 9\n")}, 2, "", "bad line"},
+		{"bad count", []string{write("f", "mode: set\nx.go:1.1,2.2 a 1\n")}, 2, "", "bad line"},
+		{"bad hits", []string{write("g", "mode: set\nx.go:1.1,2.2 3 b\n")}, 2, "", "bad line"},
+		{"huge line", []string{write("h", "mode: set\n"+strings.Repeat("x", 1<<20)+"\n")}, 2, "", "too long"},
 	} {
 		var out, errw bytes.Buffer
-		if got := run(tc.args, &out, &errw); got != tc.want || !strings.Contains(out.String(), tc.out) {
-			t.Errorf("%s: %d %q %q, want %d %q", tc.name, got, out.String(), errw.String(), tc.want, tc.out)
+		got := func() (code int) {
+			defer func() {
+				if r := recover(); r != nil { // a panic is a failure of this case, not of the binary
+					t.Errorf("%s: panic %v", tc.name, r)
+					code = -1
+				}
+			}()
+			return run(tc.args, &out, &errw)
+		}()
+		if got != tc.want || !strings.Contains(out.String(), tc.out) || !strings.Contains(errw.String(), tc.msg) {
+			t.Errorf("%s: %d %q %q, want %d %q %q", tc.name, got, out.String(), errw.String(), tc.want, tc.out, tc.msg)
 		}
 	}
 }

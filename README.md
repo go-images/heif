@@ -89,6 +89,6 @@ first version because the machine was above the fleet's load limit.
 
 `go test ./...` runs everything; the package keeps 100% statement coverage
 (`go run ./internal/covergate cover.out`). `internal/mkhevc` makes the HEVC test streams with
-ffmpeg; the other `internal` commands convert and compare images.
+ffmpeg; `internal/mkpng` writes the reference PNGs.
 
 BSD 3-Clause.
