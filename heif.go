@@ -164,14 +164,21 @@ func (f *file) colorModel(pl *plan) color.Model {
 	return color.RGBAModel
 }
 
+// blackHole discards what is written to it. It has no ReadFrom, unlike io.Discard, whose
+// pooled 8 KiB buffer the race detector keeps emptying: skipping a stream of small boxes
+// with io.Discard allocated 273 MiB under -race.
+type blackHole struct{}
+
+func (blackHole) Write(p []byte) (int, error) { return len(p), nil }
+
 // readHead reads the top-level boxes of a file up to and including meta, skipping the
 // others (mdat in particular), and returns ftyp and meta joined. A box declared to run
 // to the end of the file ends the search.
 func readHead(r io.Reader, max int64) ([]byte, error) {
 	var out []byte
 	var read int64
+	var hdr [16]byte // one for the whole walk, not one per box
 	for {
-		var hdr [16]byte
 		if _, err := io.ReadFull(r, hdr[:8]); err != nil {
 			return nil, fmt.Errorf("%w: no meta box before the end of the file", ErrTruncated)
 		}
@@ -193,7 +200,7 @@ func readHead(r io.Reader, max int64) ([]byte, error) {
 		read += int64(size)
 		body := int64(size - hl)
 		if typ != "ftyp" && typ != "meta" {
-			if _, err := io.CopyN(io.Discard, r, body); err != nil {
+			if _, err := io.CopyN(blackHole{}, r, body); err != nil {
 				return nil, fmt.Errorf("%w: box %q", ErrTruncated, typ)
 			}
 			continue
