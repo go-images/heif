@@ -52,6 +52,7 @@ func sameImage(t *testing.T, name string, got, want image.Image) {
 }
 
 func TestTransforms(t *testing.T) {
+	defer guard(t)
 	c := loadCoded(t, "yuv420p", 1, 8)
 	base := xfBase(t, c)
 	const w, h = 36, 22
@@ -89,6 +90,7 @@ func TestTransforms(t *testing.T) {
 }
 
 func TestCleanAperture(t *testing.T) {
+	defer guard(t)
 	c := loadCoded(t, "yuv420p", 1, 8)
 	base := xfBase(t, c)
 	const w, h = 36, 22
@@ -131,6 +133,7 @@ func TestCleanAperture(t *testing.T) {
 // A clean aperture whose corner falls on a chroma sample shares the decoder's planes; one
 // that does not is converted. Both give the same pixels.
 func TestApertureWindowSharesPlanes(t *testing.T) {
+	defer guard(t)
 	c := loadCoded(t, "yuv420p", 1, 8)
 	for _, tc := range []struct {
 		name   string
@@ -185,6 +188,7 @@ func colorDiff(a, b color.Color) (int, int) {
 }
 
 func TestApertureOfMonochromeSharesPlanes(t *testing.T) {
+	defer guard(t)
 	g := loadCoded(t, "gray", 0, 8)
 	got, err := Decode(bytes.NewReader(single(g, 36, 22, clap(21, 1, 11, 1, 0, 1, 0, 1)).bytes()))
 	if err != nil {
@@ -200,6 +204,7 @@ func TestApertureOfMonochromeSharesPlanes(t *testing.T) {
 }
 
 func TestMonochromeAndDeepTransforms(t *testing.T) {
+	defer guard(t)
 	for _, tc := range []struct {
 		file         string
 		chroma, bits int

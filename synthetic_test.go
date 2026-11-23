@@ -32,6 +32,7 @@ func synth(w, h, cw, ch int, v uint8) *h265.DecodedPicture {
 }
 
 func TestShifts(t *testing.T) {
+	defer guard(t)
 	for _, tc := range []struct {
 		name   string
 		pic    *h265.DecodedPicture
@@ -60,6 +61,7 @@ func TestShifts(t *testing.T) {
 }
 
 func TestRenderRefusals(t *testing.T) {
+	defer guard(t)
 	// chroma planes of an unusual size
 	if _, err := render(synth(9, 6, 3, 6, 1), nil, nil); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("render: %v", err)
@@ -108,6 +110,7 @@ func TestRenderRefusals(t *testing.T) {
 }
 
 func TestApplyEdges(t *testing.T) {
+	defer guard(t)
 	r := &raster{pix: []byte{1, 2, 3, 4}, stride: 2, w: 2, h: 2, bpp: 1}
 	if got, err := apply(r, xform{kind: 'r', n: 0}); err != nil || got != r {
 		t.Errorf("rotation by zero: %v", err)
@@ -118,6 +121,7 @@ func TestApplyEdges(t *testing.T) {
 }
 
 func TestDirectSubsampling(t *testing.T) {
+	defer guard(t)
 	for _, tc := range []struct {
 		name  string
 		pic   *h265.DecodedPicture
@@ -145,6 +149,7 @@ func TestDirectSubsampling(t *testing.T) {
 }
 
 func TestSameFormat(t *testing.T) {
+	defer guard(t)
 	a := synth(8, 6, 4, 3, 1)
 	if !sameFormat(a, synth(8, 6, 4, 3, 2)) {
 		t.Error("equal formats differ")
@@ -172,6 +177,7 @@ func TestSameFormat(t *testing.T) {
 }
 
 func TestFirstPicture(t *testing.T) {
+	defer guard(t)
 	ok := synth(4, 4, 2, 2, 1)
 	other := synth(4, 4, 2, 2, 2)
 	if got, err := firstPicture(nil, nil, nil); got != nil || err != nil {
@@ -197,6 +203,7 @@ func TestFirstPicture(t *testing.T) {
 }
 
 func TestCopyTileOfDeepPictures(t *testing.T) {
+	defer guard(t)
 	// a 10-bit grid of 2x2 tiles decodes to the same pixels as the tile, repeated
 	c := loadCoded(t, "yuv420p10le", 1, 10)
 	tile, err := Decode(bytes.NewReader(single(c, 36, 22).bytes()))
@@ -217,6 +224,7 @@ func TestCopyTileOfDeepPictures(t *testing.T) {
 }
 
 func TestAlphaDetection(t *testing.T) {
+	defer guard(t)
 	c := loadCoded(t, "yuv420p", 1, 8)
 	aux := func(urn string) hfile {
 		f := single(c, 36, 22)
@@ -267,6 +275,7 @@ func TestAlphaDetection(t *testing.T) {
 }
 
 func TestBadTileProperties(t *testing.T) {
+	defer guard(t)
 	c := loadCoded(t, "yuv420p", 1, 8)
 	for _, tile := range []int{1, 3} { // the first tile is read by parseGrid, the others by the decoder
 		f := gridFile(c, 36, 22, 2, 2, 60, 40, gridDesc(2, 2, 60, 40, false))
@@ -280,6 +289,7 @@ func TestBadTileProperties(t *testing.T) {
 // A grid too large for one buffer is refused before any tile beyond the first is decoded.
 // parseGrid cannot make one under the default limits, so the plan is built by hand.
 func TestGridPictureTooLarge(t *testing.T) {
+	defer guard(t)
 	f, err := parseFile(goodBytes(t), DefaultLimits())
 	if err != nil {
 		t.Fatal(err)
@@ -291,6 +301,7 @@ func TestGridPictureTooLarge(t *testing.T) {
 }
 
 func TestConfigRefusesABadAperture(t *testing.T) {
+	defer guard(t)
 	c := loadCoded(t, "yuv420p", 1, 8)
 	data := single(c, 36, 22, clap(20, 0, 10, 1, 0, 1, 0, 1)).bytes()
 	if _, err := DecodeConfig(bytes.NewReader(data)); !errors.Is(err, ErrInvalid) {

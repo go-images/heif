@@ -50,6 +50,7 @@ var (
 )
 
 func TestStructureErrors(t *testing.T) {
+	defer guard(t)
 	ftypOnly := mkbox("ftyp", []byte("heic"), u32(0))
 	for _, tc := range []struct {
 		name string
@@ -107,6 +108,7 @@ func TestStructureErrors(t *testing.T) {
 // ISO/IEC 14496-12 4.2: a size of 1 is followed by a 64-bit size, a size of 0 runs to the
 // end of the file, and a uuid type carries 16 more bytes of identifier.
 func TestBoxHeaderForms(t *testing.T) {
+	defer guard(t)
 	data := goodBytes(t)
 	whole, err := Decode(bytes.NewReader(data))
 	if err != nil {
@@ -124,6 +126,7 @@ func TestBoxHeaderForms(t *testing.T) {
 }
 
 func TestVersionsOfBoxes(t *testing.T) {
+	defer guard(t)
 	c := loadCoded(t, "yuv420p", 1, 8)
 	base, err := Decode(bytes.NewReader(goodBytes(t)))
 	if err != nil {
@@ -162,6 +165,7 @@ func TestVersionsOfBoxes(t *testing.T) {
 }
 
 func TestIlocFields(t *testing.T) {
+	defer guard(t)
 	// offset, length and base of 8 bytes, an extent index of 4 (version 1)
 	f := newFile(Limits{})
 	body := fbox("iloc", 1, 0, u16(0x8884, 1), u16(7, 0, 0), u32(0, 100), u16(2),
@@ -207,6 +211,7 @@ func TestIlocFields(t *testing.T) {
 }
 
 func TestIpmaIinfIrefLimits(t *testing.T) {
+	defer guard(t)
 	// ipma
 	ipmaCases := []struct {
 		name string
@@ -249,6 +254,7 @@ func TestIpmaIinfIrefLimits(t *testing.T) {
 }
 
 func TestPropertyForms(t *testing.T) {
+	defer guard(t)
 	// a colr of an unknown kind is kept without a profile; pixi and auxC are read
 	pr, err := parseProperty(box{typ: "colr", body: []byte("abcdxyz")})
 	if err != nil || pr.isNCLX || pr.icc != nil {
@@ -291,6 +297,7 @@ func TestPropertyForms(t *testing.T) {
 }
 
 func TestPropertyAssociations(t *testing.T) {
+	defer guard(t)
 	f := newFile(Limits{})
 	f.props = []property{{typ: "ispe"}, {typ: "zzzz"}}
 	it := &item{id: 1, assocs: []assoc{{0, false}, {1, true}, {2, false}}}
@@ -310,6 +317,7 @@ func TestPropertyAssociations(t *testing.T) {
 }
 
 func TestLimitsOfStructure(t *testing.T) {
+	defer guard(t)
 	c := loadCoded(t, "yuv420p", 1, 8)
 	data := single(c, 36, 22).bytes()
 	for _, tc := range []struct {
@@ -364,6 +372,7 @@ func TestLimitsOfStructure(t *testing.T) {
 // Every tile is decoded: tiles that are long and narrow cost far more than the pixels of
 // the image they make, so their total is bounded as well.
 func TestGridTileBudget(t *testing.T) {
+	defer guard(t)
 	c := loadCoded(t, "yuv420p", 1, 8)
 	data := gridFile(c, 36, 22, 5, 1, 2, 100, gridDesc(5, 1, 2, 100, false)).bytes()
 	if _, err := DecodeOptions(bytes.NewReader(data), Options{Limits: Limits{MaxPixels: 800}}); !errors.Is(err, ErrImageTooLarge) {
@@ -375,6 +384,7 @@ func TestGridTileBudget(t *testing.T) {
 }
 
 func TestItemData(t *testing.T) {
+	defer guard(t)
 	c := loadCoded(t, "yuv420p", 1, 8)
 	base, err := Decode(bytes.NewReader(goodBytes(t)))
 	if err != nil {
@@ -441,6 +451,7 @@ func TestItemData(t *testing.T) {
 }
 
 func TestDecodeFailures(t *testing.T) {
+	defer guard(t)
 	c := loadCoded(t, "yuv420p", 1, 8)
 	mutate := func(f func(*hfile)) []byte {
 		h := single(c, 36, 22)
@@ -476,6 +487,7 @@ func TestDecodeFailures(t *testing.T) {
 }
 
 func TestPlaneGuard(t *testing.T) {
+	defer guard(t)
 	ok := &h265.DecodedPicture{Components: 1}
 	ok.Planes[0] = h265.Plane{Width: 4, Height: 2, Stride: 4, Pix8: make([]uint8, 8)}
 	if err := checkPlanes(ok); err != nil {
@@ -528,6 +540,7 @@ func (f *failing) Read(p []byte) (int, error) {
 }
 
 func TestReadErrors(t *testing.T) {
+	defer guard(t)
 	boom := errors.New("boom")
 	if _, err := Decode(&failing{data: goodBytes(t)[:30], err: boom}); !errors.Is(err, boom) {
 		t.Errorf("Decode: %v", err)
@@ -550,6 +563,7 @@ func topBoxes(t testing.TB, data []byte) [][]byte {
 }
 
 func TestDecodeConfigReadsOnlyTheHead(t *testing.T) {
+	defer guard(t)
 	data := goodBytes(t)
 	parts := topBoxes(t, data) // ftyp, meta, mdat
 	ftyp, meta, mdat := parts[0], parts[1], parts[2]
@@ -607,6 +621,7 @@ func TestDecodeConfigReadsOnlyTheHead(t *testing.T) {
 // Cutting any box of the meta tree at any length, and shrinking its containers to match,
 // never panics and ends in a decoded image or a named error.
 func TestTruncationSweep(t *testing.T) {
+	defer guard(t)
 	c := loadCoded(t, "yuv420p", 1, 8)
 	grid := gridFile(c, 36, 22, 2, 2, 60, 40, gridDesc(2, 2, 60, 40, false), colrNclx(1, 1, 1, true), irot(1))
 	grid.refs = append(grid.refs, href{"auxl", 6, []uint32{1}})

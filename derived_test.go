@@ -37,6 +37,7 @@ func gridDesc(rows, cols int, w, h uint32, wide bool) []byte {
 }
 
 func TestGrid(t *testing.T) {
+	defer guard(t)
 	c := loadCoded(t, "yuv420p", 1, 8)
 	tile := xfBase(t, c)
 	for _, tc := range []struct {
@@ -67,6 +68,7 @@ func TestGrid(t *testing.T) {
 // A grid's descriptor may sit in mdat, which DecodeConfig does not read: it answers from
 // the ispe of the grid, and Decode checks the descriptor against it.
 func TestGridDescriptorInMdat(t *testing.T) {
+	defer guard(t)
 	c := loadCoded(t, "yuv420p", 1, 8)
 	f := gridFile(c, 36, 22, 2, 2, 60, 40, gridDesc(2, 2, 60, 40, false))
 	f.items[0].idat = false
@@ -86,6 +88,7 @@ func TestGridDescriptorInMdat(t *testing.T) {
 }
 
 func TestGridErrors(t *testing.T) {
+	defer guard(t)
 	c := loadCoded(t, "yuv420p", 1, 8)
 	g := loadCoded(t, "gray", 0, 8)
 	grid := func(rows, cols int, w, h uint32, desc []byte) hfile {
@@ -166,6 +169,7 @@ func TestGridErrors(t *testing.T) {
 }
 
 func TestIdentity(t *testing.T) {
+	defer guard(t)
 	c := loadCoded(t, "yuv420p", 1, 8)
 	base := xfBase(t, c)
 	const w, h = 36, 22

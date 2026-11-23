@@ -73,6 +73,7 @@ func refRGB(p *h265.DecodedPicture, x, y int, kr, kb float64, full bool) (r, g, 
 }
 
 func TestColourConversion(t *testing.T) {
+	defer guard(t)
 	type kk struct{ kr, kb float64 }
 	coefs := map[uint16]kk{1: {0.2126, 0.0722}, 2: {0.299, 0.114}, 5: {0.299, 0.114}, 6: {0.299, 0.114}, 9: {0.2627, 0.0593}}
 	for _, name := range []struct {
@@ -121,6 +122,7 @@ func TestColourConversion(t *testing.T) {
 }
 
 func TestColourModels(t *testing.T) {
+	defer guard(t)
 	for _, tc := range []struct {
 		file         string
 		chroma, bits int
@@ -177,6 +179,7 @@ func typeName(img image.Image) string {
 }
 
 func TestUnsupportedMatrix(t *testing.T) {
+	defer guard(t)
 	c := loadCoded(t, "yuv420p", 1, 8)
 	data := single(c, 36, 22, colrNclx(1, 1, 8, true)).bytes()
 	if _, err := Decode(bytes.NewReader(data)); !errorsIs(err, ErrUnsupported) {
@@ -190,6 +193,7 @@ func TestUnsupportedMatrix(t *testing.T) {
 }
 
 func TestICCAndAlphaReported(t *testing.T) {
+	defer guard(t)
 	c := loadCoded(t, "yuv420p", 1, 8)
 	h := single(c, 36, 22, colrICC([]byte("profile-bytes")))
 	// an alpha auxiliary item pointing at item 1

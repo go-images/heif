@@ -98,16 +98,13 @@ func parseProperty(b box) (property, error) {
 		}
 		p.auxType = string(z)
 	case "hvcC":
-		h, err := parseHvcC(&r)
-		if err != nil {
-			return p, err
-		}
-		p.hvcc = h
+		p.hvcc = parseHvcC(&r)
 	}
 	return p, r.err(b.typ)
 }
 
-func parseHvcC(r *rd) (hvcC, error) {
+// parseHvcC reads an hvcC; a cut box leaves r failed, which the caller reports.
+func parseHvcC(r *rd) hvcC {
 	var h hvcC
 	// version, profile, compatibility, constraints, level, segmentation, parallelism,
 	// chroma_format_idc (16), bit depths minus 8 (17, 18), frame rate
@@ -126,7 +123,7 @@ func parseHvcC(r *rd) (hvcC, error) {
 			}
 		}
 	}
-	return h, r.err("hvcC")
+	return h
 }
 
 // props returns the properties of an item, in the order ipma lists them (which is the

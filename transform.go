@@ -70,7 +70,8 @@ func mirror(r *raster, axis uint8) {
 	var tmp [8]byte
 	for y := 0; y < r.h; y++ {
 		row := r.pix[y*r.stride:][:r.w*b]
-		for i, j := 0, (r.w-1)*b; i < j; i, j = i+b, j-b {
+		for x := 0; x < r.w/2; x++ {
+			i, j := x*b, (r.w-1-x)*b
 			copy(tmp[:b], row[i:i+b])
 			copy(row[i:i+b], row[j:j+b])
 			copy(row[j:j+b], tmp[:b])

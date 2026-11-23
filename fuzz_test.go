@@ -97,6 +97,7 @@ func FuzzDecode(f *testing.F) {
 // TestWriteCorpus writes the seeds as a committed fuzz corpus; run it with
 // HEIF_WRITE_CORPUS=testdata/fuzz/FuzzDecode.
 func TestWriteCorpus(t *testing.T) {
+	defer guard(t)
 	dir := os.Getenv("HEIF_WRITE_CORPUS")
 	if dir == "" {
 		t.Skip("HEIF_WRITE_CORPUS not set")

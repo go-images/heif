@@ -6,7 +6,6 @@ package heif
 import (
 	"encoding/binary"
 	"fmt"
-	"math"
 
 	"github.com/go-avkit/h265"
 )
@@ -408,7 +407,7 @@ func newGridPicture(tile *h265.DecodedPicture, w, h int) (*h265.DecodedPicture, 
 		if c > 0 {
 			pw, ph = (w+int(hs))>>hs, (h+int(vs))>>vs
 		}
-		if uint64(pw)*uint64(ph) > math.MaxInt32 {
+		if !fits(uint64(pw) * uint64(ph)) {
 			return nil, ErrImageTooLarge
 		}
 		p := h265.Plane{Width: pw, Height: ph, Stride: pw}

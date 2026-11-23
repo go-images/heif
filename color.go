@@ -24,8 +24,11 @@ type raster struct {
 	bpp    int
 }
 
+// fits reports whether a buffer of n bytes may be allocated.
+func fits(n uint64) bool { return n <= maxBuffer }
+
 func newRaster(w, h, bpp int) (*raster, error) {
-	if uint64(w)*uint64(h)*uint64(bpp) > maxBuffer {
+	if !fits(uint64(w) * uint64(h) * uint64(bpp)) {
 		return nil, fmt.Errorf("%w: %dx%d pixels of %d bytes", ErrImageTooLarge, w, h, bpp)
 	}
 	return &raster{pix: make([]byte, w*h*bpp), stride: w * bpp, w: w, h: h, bpp: bpp}, nil
@@ -110,12 +113,12 @@ func render(pic *h265.DecodedPicture, c *nclx, xs []xform) (image.Image, error) 
 func window(xs []xform, w, h int, hs, vs uint) (image.Rectangle, bool) {
 	x0, y0 := 0, 0
 	for _, x := range xs {
-		if x.kind != 'c' {
-			return image.Rectangle{}, false
-		}
+		// a rotation or a mirror carries no aperture, and cropRect refuses its zero
+		// denominators, which ends the search just as a fault in a real one does (the
+		// conversion path reports it)
 		cx0, cy0, cx1, cy1, err := cropRect(x.clap, w, h)
 		if err != nil {
-			return image.Rectangle{}, false // the conversion path reports it
+			return image.Rectangle{}, false
 		}
 		x0, y0, w, h = x0+cx0, y0+cy0, cx1-cx0, cy1-cy0
 	}

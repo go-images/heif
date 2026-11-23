@@ -5,6 +5,7 @@ package heif
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"runtime"
 	"runtime/debug"
@@ -29,9 +30,20 @@ func bombed(f func()) uint64 {
 }
 
 // endless is a reader that never ends: an ftyp, then free boxes for ever.
-type endless struct{ head []byte }
+// It stops after 16 MiB with errOverread, so that a reader that fails to refuse it ends
+// in a failed assertion instead of a test that never returns.
+type endless struct {
+	head []byte
+	read int
+}
+
+var errOverread = errors.New("read past what a refusal needs")
 
 func (e *endless) Read(p []byte) (int, error) {
+	if e.read > 16<<20 {
+		return 0, errOverread
+	}
+	e.read += len(p)
 	n := 0
 	for n < len(p) {
 		if len(e.head) == 0 {
@@ -47,6 +59,7 @@ func (e *endless) Read(p []byte) (int, error) {
 var _ io.Reader = (*endless)(nil)
 
 func TestBombs(t *testing.T) {
+	defer guard(t)
 	c := loadCoded(t, "yuv420p", 1, 8)
 	ftyp := mkbox("ftyp", []byte("heic"), u32(0), []byte("mif1"))
 	free := mkbox("free")
@@ -99,6 +112,7 @@ func TestBombs(t *testing.T) {
 	}
 	for _, tc := range hostile {
 		t.Run(tc.name, func(t *testing.T) {
+			defer guard(t)
 			var err, cerr error
 			n := bombed(func() {
 				_, err = DecodeOptions(bytes.NewReader(tc.data), Options{Limits: tc.lim})
@@ -123,6 +137,7 @@ func TestBombs(t *testing.T) {
 	}
 
 	t.Run("endless reader", func(t *testing.T) {
+		defer guard(t)
 		lim := Limits{MaxBytes: 1 << 20}
 		r := io.MultiReader(bytes.NewReader(ftyp), &endless{})
 		var err, cerr error

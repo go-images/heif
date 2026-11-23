@@ -15,6 +15,7 @@ import (
 // from a local clone and the test is skipped when none is named. Each file must decode
 // or end in a named error, and DecodeConfig must agree with Decode.
 func TestLocalFiles(t *testing.T) {
+	defer guard(t)
 	var files []string
 	for _, d := range filepath.SplitList(os.Getenv("HEIF_LOCAL_DIRS")) {
 		m, err := filepath.Glob(filepath.Join(d, "*.heic"))

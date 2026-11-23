@@ -309,3 +309,11 @@ func single(c coded, w, h uint32, extra ...[]byte) hfile {
 }
 
 func errorsIs(err, target error) bool { return errors.Is(err, target) }
+
+// guard turns a panic into a failed assertion, so a test that survives a bad
+// mutation only by crashing is still a red test with a message, not luck.
+func guard(t testing.TB) {
+	if r := recover(); r != nil {
+		t.Errorf("panic: %v", r)
+	}
+}

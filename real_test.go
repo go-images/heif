@@ -66,6 +66,7 @@ func psnr(a, b image.Image) float64 {
 // big.png): a grid of tiles. The md5 is ffmpeg's rawvideo yuv420p output of the file, the
 // exact oracle for the decoded planes.
 func TestGridMatchesFFmpeg(t *testing.T) {
+	defer guard(t)
 	img, err := Decode(bytes.NewReader(readTestdata(t, "big.heic")))
 	if err != nil {
 		t.Fatal(err)
@@ -82,6 +83,7 @@ func TestGridMatchesFFmpeg(t *testing.T) {
 // does not apply, so its oracle is Apple's own decode (sips -s format png), compared by
 // PSNR: the two differ in colour conversion only (measured 52 dB).
 func TestSmallMatchesApple(t *testing.T) {
+	defer guard(t)
 	img, err := Decode(bytes.NewReader(readTestdata(t, "small.heic")))
 	if err != nil {
 		t.Fatal(err)

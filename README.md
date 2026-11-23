@@ -81,7 +81,9 @@ output. Bit depths are those that `go-avkit/h265` v0.24.0 decodes.
   they are used locally only.
 
 The reference tool, libheif's `heif-dec`, was not installed when this was written, so there
-is no timing comparison against it yet (see Performance).
+is no timing comparison against it yet. `BenchmarkDecodeGrid` and `BenchmarkDecodeSmall`
+(`GOMAXPROCS=1 gotest -run XXX -bench Decode .`) are the harness; they were not run for this
+first version because the machine was above the fleet's load limit.
 
 ## Development
 
