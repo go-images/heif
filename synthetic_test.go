@@ -63,18 +63,11 @@ func TestShifts(t *testing.T) {
 func TestRenderRefusals(t *testing.T) {
 	defer guard(t)
 	// chroma planes of an unusual size
-	if _, err := render(synth(9, 6, 3, 6, 1), nil, nil); !errors.Is(err, ErrUnsupported) {
+	if _, err := render(synth(9, 6, 3, 6, 1), nil, placement{}); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("render: %v", err)
 	}
 	if _, err := newGridPicture(synth(9, 6, 3, 6, 1), 20, 20); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("grid: %v", err)
-	}
-	// a transformation that cannot apply (the sizes are checked before, by Decode)
-	zero := xform{kind: 'c', clap: [8]uint32{2, 0, 2, 1, 0, 1, 0, 1}}
-	for _, c := range []*nclx{nil, {Matrix: 1, FullRange: true}} {
-		if _, err := render(synth(4, 4, 2, 2, 100), c, []xform{zero}); !errors.Is(err, ErrInvalid) {
-			t.Errorf("render with a bad aperture (%v): %v", c, err)
-		}
 	}
 	// pictures too large for one buffer: the planes need no samples to be refused
 	big := &h265.DecodedPicture{Components: 1, BitDepth: [3]int{8, 8, 8}}
@@ -89,17 +82,14 @@ func TestRenderRefusals(t *testing.T) {
 	if _, err := convertColour(big3, 0, 0, 0.299, 0.114, true); !errors.Is(err, ErrImageTooLarge) {
 		t.Errorf("colour: %v", err)
 	}
-	if _, err := render(big, nil, nil); !errors.Is(err, ErrImageTooLarge) {
+	if _, err := render(big, nil, placement{}); !errors.Is(err, ErrImageTooLarge) {
 		t.Errorf("render gray: %v", err)
 	}
-	if _, err := render(big3, &nclx{Matrix: 1}, nil); !errors.Is(err, ErrImageTooLarge) {
+	if _, err := render(big3, &nclx{Matrix: 1}, placement{}); !errors.Is(err, ErrImageTooLarge) {
 		t.Errorf("render colour: %v", err)
 	}
 	if _, err := newGridPicture(synth(4, 4, 2, 2, 1), 1<<17, 1<<17); !errors.Is(err, ErrImageTooLarge) {
 		t.Errorf("grid picture: %v", err)
-	}
-	if _, err := rotate(&raster{w: 1 << 16, h: 1 << 16, bpp: 8}, 1); !errors.Is(err, ErrImageTooLarge) {
-		t.Errorf("rotate: %v", err)
 	}
 	if _, err := newRaster(1<<10, 1<<10, 2048); !errors.Is(err, ErrImageTooLarge) {
 		t.Errorf("raster: %v", err)
@@ -109,13 +99,13 @@ func TestRenderRefusals(t *testing.T) {
 	}
 }
 
-func TestApplyEdges(t *testing.T) {
+func TestPlaceEdges(t *testing.T) {
 	defer guard(t)
 	r := &raster{pix: []byte{1, 2, 3, 4}, stride: 2, w: 2, h: 2, bpp: 1}
-	if got, err := apply(r, xform{kind: 'r', n: 0}); err != nil || got != r {
-		t.Errorf("rotation by zero: %v", err)
+	if got := place(r, placement{}); got != r {
+		t.Error("nothing to do copies")
 	}
-	if _, err := apply(r, xform{kind: 'c', clap: [8]uint32{1, 0, 1, 1, 0, 1, 0, 1}}); !errors.Is(err, ErrInvalid) {
+	if _, err := compose([]xform{{kind: 'c', clap: [8]uint32{1, 0, 1, 1, 0, 1, 0, 1}}}, 4, 4); !errors.Is(err, ErrInvalid) {
 		t.Errorf("bad aperture: %v", err)
 	}
 }

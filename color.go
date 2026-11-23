@@ -75,7 +75,7 @@ func colourOf(c *nclx) (matrix uint16, full bool) {
 // are returned as they are decoded (an *image.YCbCr or *image.Gray sharing the decoder's
 // planes); everything else is converted to *image.RGBA, *image.RGBA64, *image.Gray or
 // *image.Gray16.
-func render(pic *h265.DecodedPicture, c *nclx, xs []xform) (image.Image, error) {
+func render(pic *h265.DecodedPicture, c *nclx, pl placement) (image.Image, error) {
 	matrix, full := colourOf(c)
 	hs, vs, ok := shifts(pic)
 	if !ok {
@@ -86,7 +86,7 @@ func render(pic *h265.DecodedPicture, c *nclx, xs []xform) (image.Image, error) 
 		return nil, err
 	}
 	if full && pic.Is8() && (pic.Components == 1 || matrix == 2 || matrix == 5 || matrix == 6) {
-		if win, ok := window(xs, pic.Planes[0].Width, pic.Planes[0].Height, hs, vs); ok {
+		if win, ok := window(pl, pic.Planes[0].Width, pic.Planes[0].Height, hs, vs); ok {
 			return direct(pic, hs, vs, win), nil
 		}
 	}
@@ -99,33 +99,24 @@ func render(pic *h265.DecodedPicture, c *nclx, xs []xform) (image.Image, error) 
 	if err != nil {
 		return nil, err
 	}
-	for _, x := range xs {
-		if r, err = apply(r, x); err != nil {
-			return nil, err
-		}
-	}
-	return r.image(), nil
+	return place(r, pl).image(), nil
 }
 
-// window returns the rectangle of a w x h picture that the transformations select when
-// they are all clean apertures whose corner falls on a chroma sample, so that the result
-// can share the decoder's planes; false when any other transformation applies.
-func window(xs []xform, w, h int, hs, vs uint) (image.Rectangle, bool) {
-	x0, y0 := 0, 0
-	for _, x := range xs {
-		// a rotation or a mirror carries no aperture, and cropRect refuses its zero
-		// denominators, which ends the search just as a fault in a real one does (the
-		// conversion path reports it)
-		cx0, cy0, cx1, cy1, err := cropRect(x.clap, w, h)
-		if err != nil {
-			return image.Rectangle{}, false
-		}
-		x0, y0, w, h = x0+cx0, y0+cy0, cx1-cx0, cy1-cy0
-	}
-	if x0&(1<<hs-1) != 0 || y0&(1<<vs-1) != 0 {
+// window returns the rectangle of a w x h picture that the placement selects when it only
+// crops, and the corner falls on a chroma sample, so that the result can share the
+// decoder's planes; false when the image is turned or the corner is off the chroma grid.
+func window(pl placement, w, h int, hs, vs uint) (image.Rectangle, bool) {
+	if pl.o != 0 {
 		return image.Rectangle{}, false
 	}
-	return image.Rect(x0, y0, x0+w, y0+h), true
+	rect := pl.crop
+	if rect.Empty() {
+		rect = image.Rect(0, 0, w, h)
+	}
+	if rect.Min.X&(1<<hs-1) != 0 || rect.Min.Y&(1<<vs-1) != 0 {
+		return image.Rectangle{}, false
+	}
+	return rect, true
 }
 
 // direct wraps a window of an 8-bit picture without copying it.

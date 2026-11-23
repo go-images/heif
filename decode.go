@@ -6,6 +6,7 @@ package heif
 import (
 	"encoding/binary"
 	"fmt"
+	"slices"
 
 	"github.com/go-avkit/h265"
 )
@@ -33,8 +34,9 @@ type plan struct {
 	base   *item
 	props  []*property
 	grid   *grid
-	w, h   uint32 // the base image size
-	xforms []xform
+	w, h   uint32  // the base image size
+	xforms []xform // every transformation, in order; place holds what they come to
+	place  placement
 	nclx   *nclx
 	icc    []byte
 	alpha  bool
@@ -78,7 +80,14 @@ func (f *file) resolve(id uint32, depth int) (*plan, error) {
 	default:
 		return nil, fmt.Errorf("%w: item type %q", ErrUnsupported, it.typ)
 	}
+	moves := 0
 	for _, p := range ps {
+		switch p.typ {
+		case "irot", "imir", "clap":
+			if moves++; moves > maxTransforms {
+				return nil, fmt.Errorf("%w: item %d has more than %d transformative properties", ErrInvalid, id, maxTransforms)
+			}
+		}
 		switch p.typ {
 		case "irot":
 			if p.turns != 0 { // a rotation by zero is no transformation
@@ -102,6 +111,9 @@ func (f *file) resolve(id uint32, depth int) (*plan, error) {
 		if uint64(pl.w)*uint64(pl.h) > uint64(f.lim.MaxPixels) {
 			return nil, fmt.Errorf("%w: %dx%d", ErrImageTooLarge, pl.w, pl.h)
 		}
+		if pl.place, err = compose(pl.xforms, int(pl.w), int(pl.h)); err != nil {
+			return nil, err
+		}
 	}
 	return pl, nil
 }
@@ -118,29 +130,39 @@ func (f *file) refsOf(typ string, from uint32) []uint32 {
 
 // hasAlpha reports whether an alpha plane is attached to the item (an auxl reference
 // from an auxiliary item whose type is an alpha URN). This reader does not decode it.
+//
+// Each auxiliary item is looked at once, however many references name it, and the targets
+// of a reference are searched only when the item is an alpha plane.
 func (f *file) hasAlpha(id uint32) bool {
+	alpha := map[uint32]bool{}
 	for _, r := range f.refs {
 		if r.typ != "auxl" {
 			continue
 		}
-		for _, to := range r.to {
-			if to != id {
-				continue
-			}
-			aux := f.byID[r.from]
-			if aux == nil {
-				continue
-			}
-			ps, err := f.propsOf(aux)
-			if err != nil {
-				continue
-			}
-			if a := find(ps, "auxC"); a != nil && isAlphaURN(a.auxType) {
-				return true
-			}
+		isAlpha, seen := alpha[r.from]
+		if !seen {
+			isAlpha = f.isAlphaItem(r.from)
+			alpha[r.from] = isAlpha
+		}
+		if isAlpha && slices.Contains(r.to, id) {
+			return true
 		}
 	}
 	return false
+}
+
+// isAlphaItem reports whether an item carries an auxC property naming an alpha plane.
+func (f *file) isAlphaItem(id uint32) bool {
+	aux := f.byID[id]
+	if aux == nil {
+		return false
+	}
+	ps, err := f.propsOf(aux)
+	if err != nil {
+		return false
+	}
+	a := find(ps, "auxC")
+	return a != nil && isAlphaURN(a.auxType)
 }
 
 func isAlphaURN(s string) bool {
@@ -152,8 +174,11 @@ func (f *file) parseGrid(it *item, ps []*property) (*grid, error) {
 		// only meta was read: the descriptor may sit in mdat, so take the size from ispe
 		sz := find(ps, "ispe")
 		to := f.refsOf("dimg", it.id)
-		if sz == nil || len(to) == 0 {
+		if sz == nil || len(to) == 0 || sz.w == 0 || sz.h == 0 {
 			return nil, fmt.Errorf("%w: grid %d without a size or tiles", ErrInvalid, it.id)
+		}
+		if uint64(sz.w)*uint64(sz.h) > uint64(f.lim.MaxPixels) {
+			return nil, fmt.Errorf("%w: grid of %dx%d", ErrImageTooLarge, sz.w, sz.h)
 		}
 		t := f.byID[to[0]]
 		if t == nil || t.typ != "hvc1" {
@@ -224,27 +249,8 @@ func (f *file) parseGrid(it *item, ps []*property) (*grid, error) {
 	return g, nil
 }
 
-// outDims applies the transformations to a w x h image, giving the size of the result.
-func outDims(xs []xform, w, h int) (int, int, error) {
-	for _, x := range xs {
-		switch x.kind {
-		case 'r':
-			if x.n&1 != 0 {
-				w, h = h, w
-			}
-		case 'c':
-			x0, y0, x1, y1, err := cropRect(x.clap, w, h)
-			if err != nil {
-				return 0, 0, err
-			}
-			w, h = x1-x0, y1-y0
-		}
-	}
-	return w, h, nil
-}
-
-// decodeHEVC decodes an hvc1 item to its picture.
-func (f *file) decodeHEVC(it *item, w, h uint32) (*h265.DecodedPicture, error) {
+// hvccOf returns the decoder configuration property of an hvc1 item.
+func (f *file) hvccOf(it *item) (*property, error) {
 	ps, err := f.propsOf(it)
 	if err != nil {
 		return nil, err
@@ -253,12 +259,70 @@ func (f *file) decodeHEVC(it *item, w, h uint32) (*h265.DecodedPicture, error) {
 	if hp == nil {
 		return nil, fmt.Errorf("%w: item %d has no hvcC", ErrInvalid, it.id)
 	}
+	return hp, nil
+}
+
+// newDecoder makes an HEVC decoder under the limits of the file. Pictures given back
+// with Release are reused, so the tiles of a grid share the planes of one another.
+func (f *file) newDecoder() *h265.Decoder {
+	return h265.NewDecoder(h265.Options{
+		Limits:          h265.Limits{MaxPixels: f.lim.MaxPixels, MaxDPBBytes: f.lim.MaxDecoderBytes},
+		RecyclePictures: true,
+	})
+}
+
+// maxNALUnits is the most NAL units one item may hold: a picture of a still image has a
+// few slices, and the largest level of HEVC allows hundreds.
+const maxNALUnits = 1 << 12
+
+// scanUnits walks the length-prefixed NAL units of item data without keeping them, and
+// refuses more than max units or more than one picture: a still image is one access unit,
+// and a stream of tiny units (or of pictures) must not cost memory or decoding time in
+// proportion to a file that states them by the million. A picture starts at a slice
+// segment whose first_slice_segment_in_pic_flag is set.
+func scanUnits(data []byte, lengthSize, max int) error {
+	n, pictures := 0, 0
+	for len(data) > 0 {
+		if len(data) < lengthSize {
+			return fmt.Errorf("%w: a unit length is cut short", ErrCorrupt)
+		}
+		var l uint64
+		for _, b := range data[:lengthSize] {
+			l = l<<8 | uint64(b)
+		}
+		data = data[lengthSize:]
+		if l > uint64(len(data)) {
+			return fmt.Errorf("%w: a unit of %d bytes runs past the item", ErrCorrupt, l)
+		}
+		if n++; n > max {
+			return fmt.Errorf("%w: more than %d NAL units in an item", ErrTooManyItems, max)
+		}
+		u := data[:l]
+		data = data[l:]
+		if len(u) >= 3 && u[0]>>1&0x3F < 32 && u[2]&0x80 != 0 {
+			if pictures++; pictures > 1 {
+				return fmt.Errorf("%w: an item holds more than one picture", ErrInvalid)
+			}
+		}
+	}
+	return nil
+}
+
+// decodeHEVC decodes an hvc1 item to its picture with dec, which carries no state the
+// item needs: every item sends its parameter sets again, and a still picture is an IDR.
+func (f *file) decodeHEVC(dec *h265.Decoder, it *item, hp *property, w, h uint32) (*h265.DecodedPicture, error) {
 	data, err := f.itemData(it)
 	if err != nil {
 		return nil, err
 	}
+	if err := scanUnits(data, hp.hvcc.lengthSize, maxNALUnits); err != nil {
+		return nil, fmt.Errorf("item %d: %w", it.id, err)
+	}
 	var sets []byte
 	for _, n := range hp.hvcc.nals {
+		if len(n) > 0 && n[0]>>1&0x3F < 32 { // parameter sets and SEI, not pictures
+			return nil, fmt.Errorf("%w: item %d: hvcC holds a coded slice", ErrInvalid, it.id)
+		}
 		sets = binary.BigEndian.AppendUint32(sets, uint32(len(n)))
 		sets = append(sets, n...)
 	}
@@ -266,20 +330,15 @@ func (f *file) decodeHEVC(it *item, w, h uint32) (*h265.DecodedPicture, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: hvcC: %w", ErrCorrupt, err)
 	}
-	more, err := h265.SplitLengthPrefixed(data, hp.hvcc.lengthSize)
-	if err != nil {
-		return nil, fmt.Errorf("%w: item %d: %w", ErrCorrupt, it.id, err)
-	}
-	dec := h265.NewDecoder(h265.Options{Limits: h265.Limits{MaxPixels: f.lim.MaxPixels, MaxDPBBytes: f.lim.MaxDecoderBytes}})
+	more, _ := h265.SplitLengthPrefixed(data, hp.hvcc.lengthSize) // scanUnits has walked this framing
+	units = append(units, more...)                                // the parameter sets, then the item
 	var pic *h265.DecodedPicture
-	all := append(units, more...)
-	for i := 0; i <= len(all); i++ { // every unit, then the flush that ends the stream
+	for i := 0; i <= len(units); i++ {
 		var out []h265.Output
-		var err error
-		if i < len(all) {
-			out, err = dec.Decode(all[i])
+		if i < len(units) {
+			out, err = dec.Decode(units[i])
 		} else {
-			out, err = dec.Flush()
+			out, err = dec.Flush() // the end of the stream
 		}
 		if pic, err = firstPicture(pic, out, err); err != nil {
 			return nil, fmt.Errorf("item %d: %w", it.id, err)
@@ -332,25 +391,42 @@ func checkPlanes(pic *h265.DecodedPicture) error {
 // decodeBase decodes the coded base image of a plan.
 func (f *file) decodeBase(pl *plan) (*h265.DecodedPicture, error) {
 	if pl.grid == nil {
-		return f.decodeHEVC(pl.base, pl.w, pl.h)
+		hp, err := f.hvccOf(pl.base)
+		if err != nil {
+			return nil, err
+		}
+		return f.decodeHEVC(f.newDecoder(), pl.base, hp, pl.w, pl.h)
 	}
 	g := pl.grid
 	var out *h265.DecodedPicture
-	var first *h265.DecodedPicture
+	var first h265.DecodedPicture // the format of the first tile, kept after its planes are released
+	decoders := map[*property]*h265.Decoder{}
 	for i, t := range g.tiles {
-		pic, err := f.decodeHEVC(t, g.tw, g.th)
+		// one decoder for the tiles that share their hvcC (a grid's tiles all do), so that
+		// the planes of a tile are reused by the next
+		hp, err := f.hvccOf(t)
+		if err != nil {
+			return nil, err
+		}
+		dec := decoders[hp]
+		if dec == nil {
+			dec = f.newDecoder()
+			decoders[hp] = dec
+		}
+		pic, err := f.decodeHEVC(dec, t, hp, g.tw, g.th)
 		if err != nil {
 			return nil, err
 		}
 		if i == 0 {
-			first = pic
+			first = *pic
 			if out, err = newGridPicture(pic, int(g.w), int(g.h)); err != nil {
 				return nil, err
 			}
-		} else if !sameFormat(first, pic) {
+		} else if !sameFormat(&first, pic) {
 			return nil, fmt.Errorf("%w: grid tile %d differs in format from the first", ErrInvalid, t.id)
 		}
 		copyTile(out, pic, (i%g.cols)*int(g.tw), (i/g.cols)*int(g.th))
+		pic.Release()
 	}
 	return out, nil
 }

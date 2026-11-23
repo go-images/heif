@@ -408,10 +408,6 @@ func TestItemData(t *testing.T) {
 	// overlapping extents: n extents over the whole data assemble n times its size
 	f = single(c, 36, 22)
 	f.items[0].dup = 50
-	n := int64(len(c.data)) * 50
-	if _, err := DecodeOptions(bytes.NewReader(f.bytes()), Options{Limits: Limits{MaxBytes: n + 4096}}); errors.Is(err, ErrFileTooLarge) {
-		t.Errorf("under the bound: %v", err)
-	}
 	if _, err := DecodeOptions(bytes.NewReader(f.bytes()), Options{Limits: Limits{MaxBytes: int64(len(f.bytes()))}}); !errors.Is(err, ErrFileTooLarge) {
 		t.Errorf("overlapping extents: %v", err)
 	}

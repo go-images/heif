@@ -28,6 +28,7 @@ import (
 	"image"
 	"image/color"
 	"io"
+	"math"
 )
 
 func init() {
@@ -67,7 +68,13 @@ func Decode(r io.Reader) (image.Image, error) {
 // DecodeOptions reads the primary image of a HEIF file under the given options.
 func DecodeOptions(r io.Reader, o Options) (*Result, error) {
 	lim := o.Limits.withDefaults()
-	data, err := io.ReadAll(io.LimitReader(r, lim.MaxBytes+1))
+	// one byte more than the limit tells a file of exactly the limit from a longer one; at
+	// the largest limit there is no byte more to read, and no longer file to tell
+	n := lim.MaxBytes
+	if n < math.MaxInt64 {
+		n++
+	}
+	data, err := io.ReadAll(io.LimitReader(r, n))
 	if err != nil {
 		return nil, err
 	}
@@ -82,14 +89,11 @@ func DecodeOptions(r io.Reader, o Options) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, _, err := outDims(pl.xforms, int(pl.w), int(pl.h)); err != nil {
-		return nil, err
-	}
 	pic, err := f.decodeBase(pl)
 	if err != nil {
 		return nil, err
 	}
-	img, err := render(pic, pl.nclx, pl.xforms)
+	img, err := render(pic, pl.nclx, pl.place)
 	if err != nil {
 		return nil, err
 	}
@@ -129,10 +133,7 @@ func DecodeConfigOptions(r io.Reader, o Options) (image.Config, error) {
 	if err != nil {
 		return image.Config{}, err
 	}
-	w, h, err := outDims(pl.xforms, int(pl.w), int(pl.h))
-	if err != nil {
-		return image.Config{}, err
-	}
+	w, h := pl.place.dims(int(pl.w), int(pl.h))
 	return image.Config{ColorModel: f.colorModel(pl), Width: w, Height: h}, nil
 }
 
@@ -158,7 +159,7 @@ func (f *file) colorModel(pl *plan) color.Model {
 		return color.Gray16Model
 	case wide:
 		return color.RGBA64Model
-	case len(pl.xforms) == 0 && full && (matrix == 2 || matrix == 5 || matrix == 6):
+	case pl.place.plain() && full && (matrix == 2 || matrix == 5 || matrix == 6):
 		return color.YCbCrModel
 	}
 	return color.RGBAModel

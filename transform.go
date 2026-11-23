@@ -3,87 +3,171 @@
 
 package heif
 
-// apply runs one transformative property on a raster.
-func apply(r *raster, x xform) (*raster, error) {
-	switch x.kind {
-	case 'r':
-		if x.n == 0 {
-			return r, nil
-		}
-		return rotate(r, int(x.n))
-	case 'm':
-		mirror(r, x.n)
-		return r, nil
+import "image"
+
+// orient is one of the eight orientations of a rectangular image (the dihedral group D4):
+// an optional transposition, then an optional left-right and an optional top-bottom flip
+// of the result. Any run of irot and imir properties composes to one of them, so a file
+// that lists hundreds of them costs one pass over the pixels, not one per property.
+type orient uint8
+
+const (
+	oSwap  orient = 1 << iota // the transposition: (x, y) goes to (y, x)
+	oFlipX                    // left and right swap, after the transposition
+	oFlipY                    // top and bottom swap, after the transposition
+)
+
+// flipX and flipY append a mirror to the orientation; the flips come after the
+// transposition, so they only toggle.
+func (o orient) flipX() orient { return o ^ oFlipX }
+func (o orient) flipY() orient { return o ^ oFlipY }
+
+// transpose appends a transposition: it swaps the two flips and toggles the transposition.
+func (o orient) transpose() orient {
+	n := (o & oSwap) ^ oSwap
+	if o&oFlipX != 0 {
+		n |= oFlipY
 	}
-	x0, y0, x1, y1, err := cropRect(x.clap, r.w, r.h)
-	if err != nil {
-		return nil, err
+	if o&oFlipY != 0 {
+		n |= oFlipX
 	}
-	return crop(r, x0, y0, x1, y1), nil
+	return n
 }
 
-// rotate turns the raster anti-clockwise by n quarter turns (1 to 3) into a new one.
-func rotate(r *raster, n int) (*raster, error) {
+// rotate appends n (1 to 3) anti-clockwise quarter turns. The pixel at (x, y) of a w x h
+// image goes to (y, w-1-x) for one turn: a transposition, then a top-bottom flip.
+func (o orient) rotate(n uint8) orient {
+	switch n {
+	case 1:
+		return o.transpose().flipY()
+	case 2:
+		return o.flipX().flipY()
+	case 3:
+		return o.transpose().flipX()
+	}
+	return o // no turn
+}
+
+// placement is what the transformative properties of the primary item come to: the crop
+// rectangle of the coded image (the zero rectangle stands for the whole of it), then the
+// orientation of the cropped result.
+type placement struct {
+	crop image.Rectangle
+	o    orient
+}
+
+// plain reports that nothing is cropped or turned.
+func (p placement) plain() bool { return p.crop.Empty() && p.o == 0 }
+
+// dims is the size of the result for a w x h coded image.
+func (p placement) dims(w, h int) (int, int) {
+	if !p.crop.Empty() {
+		w, h = p.crop.Dx(), p.crop.Dy()
+	}
+	if p.o&oSwap != 0 {
+		w, h = h, w
+	}
+	return w, h
+}
+
+// maxTransforms is the most irot, imir and clap properties one item may carry. They
+// compose in constant time, so this only keeps a file from spending its bytes on
+// properties that do nothing.
+const maxTransforms = 16
+
+// compose folds the transformations, in the order they apply, into one crop and one
+// orientation of a w x h image. A clean aperture is taken in the image as the properties
+// before it left it, then moved back to coordinates of the coded image, so the crops
+// meet in one rectangle.
+func compose(xs []xform, w, h int) (placement, error) {
+	rect := image.Rect(0, 0, w, h)
+	var o orient
+	for _, x := range xs {
+		switch x.kind {
+		case 'r':
+			o = o.rotate(x.n)
+		case 'm':
+			if x.n == 0 {
+				o = o.flipY()
+			} else {
+				o = o.flipX()
+			}
+		default:
+			cw, ch := rect.Dx(), rect.Dy()
+			if o&oSwap != 0 {
+				cw, ch = ch, cw
+			}
+			u0, v0, u1, v1, err := cropRect(x.clap, cw, ch)
+			if err != nil {
+				return placement{}, err
+			}
+			if o&oFlipX != 0 {
+				u0, u1 = cw-u1, cw-u0
+			}
+			if o&oFlipY != 0 {
+				v0, v1 = ch-v1, ch-v0
+			}
+			if o&oSwap != 0 {
+				u0, v0, u1, v1 = v0, u0, v1, u1
+			}
+			rect = image.Rect(rect.Min.X+u0, rect.Min.Y+v0, rect.Min.X+u1, rect.Min.Y+v1)
+		}
+	}
+	if rect == image.Rect(0, 0, w, h) {
+		rect = image.Rectangle{}
+	}
+	return placement{crop: rect, o: o}, nil
+}
+
+// reorient returns the raster turned to an orientation, in one pass, as a new raster. The
+// pixel at (u, v) of the result is that of the source at (a, b), or (b, a) when the
+// orientation transposes, where a and b are u and v, each counted from the far edge when
+// its flip is set.
+//
+// It cannot fail for want of room: the result is as large as a raster that already exists.
+func reorient(r *raster, o orient) *raster {
 	w2, h2 := r.w, r.h
-	if n&1 != 0 {
+	if o&oSwap != 0 {
 		w2, h2 = r.h, r.w
 	}
-	out, err := newRaster(w2, h2, r.bpp)
-	if err != nil {
-		return nil, err
-	}
 	b := r.bpp
-	for y2 := 0; y2 < h2; y2++ {
-		for x2 := 0; x2 < w2; x2++ {
-			var sx, sy int
-			switch n {
-			case 1: // the pixel at (x, y) goes to (y, w-1-x)
-				sx, sy = r.w-1-y2, x2
-			case 2:
-				sx, sy = r.w-1-x2, r.h-1-y2
-			default: // the pixel at (x, y) goes to (h-1-y, x)
-				sx, sy = y2, r.h-1-x2
+	out := &raster{pix: make([]byte, w2*h2*b), stride: w2 * b, w: w2, h: h2, bpp: b}
+	for v := 0; v < h2; v++ {
+		bb := v
+		if o&oFlipY != 0 {
+			bb = h2 - 1 - v
+		}
+		for u := 0; u < w2; u++ {
+			a := u
+			if o&oFlipX != 0 {
+				a = w2 - 1 - u
 			}
-			copy(out.pix[y2*out.stride+x2*b:][:b], r.pix[sy*r.stride+sx*b:][:b])
+			sx, sy := a, bb
+			if o&oSwap != 0 {
+				sx, sy = bb, a
+			}
+			copy(out.pix[v*out.stride+u*b:][:b], r.pix[sy*r.stride+sx*b:][:b])
 		}
 	}
-	return out, nil
+	return out
 }
 
-// mirror flips the raster in place. ISO/IEC 23008-12 words imir's axis as "a vertical (0)
-// or horizontal (1) axis", which reads two ways; this follows libheif (box.cc Box_imir::parse
-// and image_item.cc, where 0 is "flip vertically" and 1 "flip horizontally"): axis 0
-// swaps top and bottom, axis 1 swaps left and right.
-func mirror(r *raster, axis uint8) {
-	b := r.bpp
-	if axis == 0 {
-		tmp := make([]byte, r.w*b)
-		for y := 0; y < r.h/2; y++ {
-			top := r.pix[y*r.stride:][:r.w*b]
-			bot := r.pix[(r.h-1-y)*r.stride:][:r.w*b]
-			copy(tmp, top)
-			copy(top, bot)
-			copy(bot, tmp)
-		}
-		return
-	}
-	var tmp [8]byte
-	for y := 0; y < r.h; y++ {
-		row := r.pix[y*r.stride:][:r.w*b]
-		for x := 0; x < r.w/2; x++ {
-			i, j := x*b, (r.w-1-x)*b
-			copy(tmp[:b], row[i:i+b])
-			copy(row[i:i+b], row[j:j+b])
-			copy(row[j:j+b], tmp[:b])
-		}
-	}
-}
-
-// crop returns the rectangle [x0,x1) x [y0,y1) as a raster sharing the pixels.
-func crop(r *raster, x0, y0, x1, y1 int) *raster {
+// crop returns the rectangle of a raster, sharing the pixels.
+func crop(r *raster, rect image.Rectangle) *raster {
 	return &raster{
-		pix:    r.pix[y0*r.stride+x0*r.bpp:],
+		pix:    r.pix[rect.Min.Y*r.stride+rect.Min.X*r.bpp:],
 		stride: r.stride,
-		w:      x1 - x0, h: y1 - y0, bpp: r.bpp,
+		w:      rect.Dx(), h: rect.Dy(), bpp: r.bpp,
 	}
+}
+
+// place crops a raster and turns the result.
+func place(r *raster, p placement) *raster {
+	if !p.crop.Empty() {
+		r = crop(r, p.crop)
+	}
+	if p.o == 0 {
+		return r
+	}
+	return reorient(r, p.o)
 }

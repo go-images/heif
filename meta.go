@@ -32,7 +32,13 @@ type item struct {
 	described bool // an infe entry named it
 	loc       *location
 	assocs    []assoc
+	// associated says an ipma entry named the item
+	associated bool
 }
+
+// maxAssocs is the most property associations one item may have: real files state a
+// dozen, and each costs sixteen bytes of memory per byte of file.
+const maxAssocs = 64
 
 // ref is one reference of iref: from -> to..., of a type (dimg, thmb, auxl, cdsc).
 type ref struct {
@@ -54,7 +60,10 @@ type file struct {
 	props       []property
 	idat        []byte
 	refs        []ref
-	cfg         bool // only meta was read (DecodeConfig): item data is not available
+	extents     int    // extent records read from iloc, all items together
+	targets     int    // reference targets read from iref, all references together
+	spent       uint64 // bytes of item data copied to assemble items (see itemData)
+	cfg         bool   // only meta was read (DecodeConfig): item data is not available
 }
 
 // stillBrands are the brands (ftyp) of a still-image file this reader accepts: the HEVC
@@ -279,6 +288,11 @@ func (f *file) parseIloc(b []byte) error {
 		if perExtent == 0 && count > 1 {
 			return fmt.Errorf("%w: item %d has %d extents of no size", ErrInvalid, id, count)
 		}
+		// an extent record is a few bytes of file and sixteen of memory: bound them
+		// before they are kept
+		if f.extents += count; count > f.lim.MaxItems || f.extents > 4*f.lim.MaxItems {
+			return fmt.Errorf("%w: %d extents", ErrTooManyItems, f.extents)
+		}
 		for e := 0; e < count && !r.bad; e++ {
 			r.uvar(idxSize) // extent_index: only construction method 2 uses it
 			off := r.uvar(offSize)
@@ -317,6 +331,9 @@ func (f *file) parseIref(p *parser, b []byte) error {
 		kr := rd{b: k.body}
 		x := ref{typ: k.typ, from: kr.idv(v != 0)}
 		count := int(kr.u16())
+		if f.targets += count; f.targets > 4*f.lim.MaxItems {
+			return fmt.Errorf("%w: %d reference targets", ErrTooManyItems, f.targets)
+		}
 		for i := 0; i < count && !kr.bad; i++ {
 			x.to = append(x.to, kr.idv(v != 0))
 		}
@@ -376,6 +393,9 @@ func (f *file) parseIpma(b []byte) error {
 	for i := uint32(0); i < n; i++ {
 		id := r.idv(v != 0)
 		count := int(r.u8())
+		if count > maxAssocs {
+			return fmt.Errorf("%w: item %d has %d property associations", ErrInvalid, id, count)
+		}
 		var as []assoc
 		for k := 0; k < count && !r.bad; k++ {
 			if flags&1 != 0 {
@@ -393,7 +413,14 @@ func (f *file) parseIpma(b []byte) error {
 		if err != nil {
 			return err
 		}
-		it.assocs = append(it.assocs, as...)
+		// an item has one entry of associations (ISO/IEC 23008-12 9.3: not verified
+		// against the text of the standard, which was not at hand): a second one would
+		// make every later look-up of its properties cost the sum of them
+		if it.associated {
+			return fmt.Errorf("%w: item %d has two ipma entries", ErrInvalid, id)
+		}
+		it.associated = true
+		it.assocs = as
 	}
 	return nil
 }

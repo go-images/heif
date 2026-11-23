@@ -11,8 +11,10 @@ import (
 // itemData returns the bytes of an item, from its iloc extents (ISO/IEC 14496-12 8.11.3).
 // Construction method 0 offsets into the file, 1 into idat; method 2 (offsets into
 // another item) is not supported. One extent is returned as a window of the file, several
-// are copied, and their total is bounded by Limits.MaxBytes so that overlapping extents
-// cannot multiply a small file.
+// are copied. Overlapping extents could multiply a small file, so what an item assembles
+// is bounded by Limits.MaxBytes, and what all the items of a file assemble together by the
+// length of the file: an honest file stores each byte once, so it never copies more than it
+// holds.
 func (f *file) itemData(it *item) ([]byte, error) {
 	l := it.loc
 	if l == nil {
@@ -46,6 +48,9 @@ func (f *file) itemData(it *item) ([]byte, error) {
 	}
 	if len(windows) == 1 {
 		return windows[0], nil
+	}
+	if f.spent += total; f.spent > uint64(len(f.data)) {
+		return nil, fmt.Errorf("%w: the items assemble more than the %d bytes of the file", ErrFileTooLarge, len(f.data))
 	}
 	out := make([]byte, 0, total)
 	for _, w := range windows {

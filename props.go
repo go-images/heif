@@ -98,13 +98,20 @@ func parseProperty(b box) (property, error) {
 		}
 		p.auxType = string(z)
 	case "hvcC":
-		p.hvcc = parseHvcC(&r)
+		var err error
+		if p.hvcc, err = parseHvcC(&r); err != nil {
+			return p, err
+		}
 	}
 	return p, r.err(b.typ)
 }
 
+// maxHvcCUnits is the most parameter-set units an hvcC may carry: a picture needs a
+// handful, and each unit costs a slice header of memory per two bytes of file.
+const maxHvcCUnits = 64
+
 // parseHvcC reads an hvcC; a cut box leaves r failed, which the caller reports.
-func parseHvcC(r *rd) hvcC {
+func parseHvcC(r *rd) (hvcC, error) {
 	var h hvcC
 	// version, profile, compatibility, constraints, level, segmentation, parallelism,
 	// chroma_format_idc (16), bit depths minus 8 (17, 18), frame rate
@@ -119,11 +126,13 @@ func parseHvcC(r *rd) hvcC {
 		for k := 0; k < n && !r.bad; k++ {
 			l := int(r.u16())
 			if nal := r.take(l); nal != nil {
-				h.nals = append(h.nals, nal)
+				if h.nals = append(h.nals, nal); len(h.nals) > maxHvcCUnits {
+					return h, fmt.Errorf("%w: an hvcC with more than %d units", ErrInvalid, maxHvcCUnits)
+				}
 			}
 		}
 	}
-	return h
+	return h, nil
 }
 
 // props returns the properties of an item, in the order ipma lists them (which is the

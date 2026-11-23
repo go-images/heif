@@ -66,11 +66,23 @@ func TestLimitsAcceptTheirOwnValue(t *testing.T) {
 	}
 
 	// the bytes the extents assemble
+	// (the file is padded so that its own length does not bound the copies first)
 	f := single(c, 36, 22)
 	f.items[0].dup = 50
 	n := int64(len(c.data)) * 50
-	if _, err := DecodeOptions(bytes.NewReader(f.bytes()), Options{Limits: Limits{MaxBytes: n}}); err != nil {
-		t.Errorf("extents at the limit: %v", err)
+	for _, tc := range []struct {
+		max  int64
+		fail bool
+	}{{n, false}, {n - 1, true}} {
+		pf, err := parseFile(f.bytes(), Limits{MaxBytes: tc.max}.withDefaults())
+		if err != nil {
+			t.Fatal(err)
+		}
+		pf.data = append(pf.data, make([]byte, n)...)
+		_, err = pf.itemData(pf.byID[1])
+		if tc.fail != errors.Is(err, ErrFileTooLarge) || !tc.fail && err != nil {
+			t.Errorf("extents against a limit of %d: %v", tc.max, err)
+		}
 	}
 }
 
