@@ -6,6 +6,19 @@ import (
 	"testing"
 )
 
+// workOf is DecodeWork on data; a panic is a failed assertion, not a crash, so that a
+// refusal the function does not make is reported as that.
+func workOf(t *testing.T, name string, data []byte, lim Limits) (n int64, err error) {
+	t.Helper()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("%s: DecodeWork panicked: %v", name, r)
+			err = errors.New("panic")
+		}
+	}()
+	return DecodeWork(bytes.NewReader(data), Options{Limits: lim})
+}
+
 // DecodeWork is the pixels the decoder processes, read from the head: the size of a single
 // picture, and every tile of a grid however small the grid is cropped to.
 func TestDecodeWork(t *testing.T) {
@@ -19,27 +32,24 @@ func TestDecodeWork(t *testing.T) {
 		"single":                {single(c, 36, 22).bytes(), 36 * 22},
 		"grid cropped to a row": {gridFile(c, 4096, 4096, 1, cols, w, 1, gridDesc(1, cols, w, 1, true)).bytes(), cols * 4096 * 4096},
 	} {
-		got, err := DecodeWork(bytes.NewReader(tc.data), Options{})
+		got, err := workOf(t, name, tc.data, Limits{})
 		if err != nil || got != tc.want {
 			t.Errorf("%s: DecodeWork = %d, %v; want %d", name, got, err, tc.want)
 		}
 	}
-	huge := gridFile(c, 8193, 8192, 1, 2, 8194, 1, gridDesc(1, 2, 8194, 1, true)).bytes()
-	if _, err := DecodeWork(bytes.NewReader(huge), Options{}); !errors.Is(err, ErrInvalid) {
-		t.Errorf("a tile over the pixel limit: %v", err)
-	}
-	if _, err := DecodeWork(bytes.NewReader([]byte("not a picture")), Options{}); err == nil {
-		t.Error("a file that is not HEIF has a work")
-	}
 	data := single(c, 36, 22).bytes()
-	noFtyp := bytes.Replace(data, []byte("ftyp"), []byte("free"), 1)
-	if _, err := DecodeWork(bytes.NewReader(noFtyp), Options{}); !errors.Is(err, ErrNotHEIF) {
-		t.Errorf("a file with no ftyp box: %v", err)
-	}
-	if _, err := DecodeWork(bytes.NewReader(data), Options{Limits: Limits{MaxBytes: 8}}); !errors.Is(err, ErrFileTooLarge) {
-		t.Errorf("a file over the limit: %v", err)
-	}
-	if _, err := DecodeWork(bytes.NewReader(data), Options{Limits: Limits{MaxPixels: 100}}); err == nil {
-		t.Error("a picture over the pixel limit has a work")
+	for name, tc := range map[string]struct {
+		data []byte
+		lim  Limits
+		want error
+	}{
+		"a tile over the pixel limit": {gridFile(c, 8193, 8192, 1, 2, 8194, 1, gridDesc(1, 2, 8194, 1, true)).bytes(), Limits{}, ErrInvalid},
+		"a file with no ftyp box":     {bytes.Replace(data, []byte("ftyp"), []byte("free"), 1), Limits{}, ErrNotHEIF},
+		"a file over the limit":       {data, Limits{MaxBytes: 8}, ErrFileTooLarge},
+		"a picture over the limit":    {data, Limits{MaxPixels: 100}, ErrImageTooLarge},
+	} {
+		if _, err := workOf(t, name, tc.data, tc.lim); !errors.Is(err, tc.want) {
+			t.Errorf("%s: %v, want %v", name, err, tc.want)
+		}
 	}
 }
