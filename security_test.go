@@ -19,6 +19,17 @@ import (
 // smallBudget is what a refusal of a small hostile file may allocate.
 const smallBudget = 8 << 20
 
+// readCost is what reading a file of that length costs before any box is looked at, by
+// either entry point, measured on an ftyp and a meta of empty boxes: it changes with the
+// build (the race detector makes it five times the length), the parser's own cost must not.
+func readCost(length int) uint64 {
+	ftyp := mkbox("ftyp", []byte("heic"), u32(0))
+	junk := bytes.Join([][]byte{ftyp, mkbox("meta", make([]byte, length-len(ftyp)-8))}, nil)
+	whole := bombed(func() { _, _ = DecodeOptions(bytes.NewReader(junk), Options{}) })
+	head := bombed(func() { _, _ = DecodeConfig(bytes.NewReader(junk)) })
+	return max(whole, head)
+}
+
 func decodeDefault(data []byte) error {
 	_, err := DecodeOptions(bytes.NewReader(data), Options{})
 	return err
@@ -34,7 +45,7 @@ func TestSecurityNALUnitBomb(t *testing.T) {
 		f.items[0].dup = dup
 		data := f.bytes()
 		var err error
-		if n := bombed(func() { err = decodeDefault(data) }); n > smallBudget {
+		if n := bombed(func() { err = decodeDefault(data) }); n > readCost(len(data))+smallBudget {
 			t.Errorf("dup %d: %d bytes allocated", dup, n)
 		}
 		if !errors.Is(err, ErrFileTooLarge) {
@@ -55,7 +66,7 @@ func TestSecurityNALUnitBomb(t *testing.T) {
 	f := single(coded{hvcC: hvcCBox(1, 8, 8, 1, nil), data: bytes.Repeat(unit, 1<<20)}, 36, 22)
 	data := f.bytes()
 	var err error
-	if n := bombed(func() { err = decodeDefault(data) }); n > smallBudget {
+	if n := bombed(func() { err = decodeDefault(data) }); n > readCost(len(data))+smallBudget {
 		t.Errorf("a million units: %d bytes allocated", n)
 	}
 	if !errors.Is(err, ErrTooManyItems) {
@@ -312,8 +323,8 @@ func TestSecurityIlocExtents(t *testing.T) {
 	defer guard(t)
 	var err error
 	data := ilocFile(256, 65535)
-	// reading the file costs its length (twice, growing its buffer); the records cost nothing
-	if n := bombed(func() { _, err = DecodeConfig(bytes.NewReader(data)) }); n > 3*uint64(len(data)) {
+	// reading the file costs what it costs; the records cost next to nothing
+	if n := bombed(func() { _, err = DecodeConfig(bytes.NewReader(data)) }); n > readCost(len(data))+smallBudget {
 		t.Errorf("the probe: %d bytes allocated for a file of %d", n, len(data))
 	}
 	if !errors.Is(err, ErrTooManyItems) {
