@@ -270,22 +270,105 @@ func (f *file) newDecoder() *h265.Decoder {
 // few slices, and the largest level of HEVC allows hundreds.
 const maxNALUnits = 1 << 12
 
-// scanUnits walks the length-prefixed NAL units of item data without keeping them, and
-// refuses more than max units or more than one picture: a still image is one access unit,
-// and a stream of tiny units (or of pictures) must not cost memory or decoding time in
-// proportion to a file that states them by the million. A picture starts at a slice
-// segment whose first_slice_segment_in_pic_flag is set.
-func scanUnits(data []byte, lengthSize, max int) error {
+// hevcConfig is what the hvcC of an hvc1 property means to the decoder, built once per
+// property: the parameter sets as units, and the ones a slice header is read against.
+// Parameter sets come from the hvcC and from nowhere else.
+type hevcConfig struct {
+	lengthSize int
+	units      []h265.Unit
+	sps        map[uint32]h265.SPS
+	pps        map[uint32]h265.PPS
+}
+
+// newHevcConfig reads the hvcC of a property. A set that does not parse is left out of
+// the maps (the decoder reports it, and a slice that names it is refused).
+func newHevcConfig(id uint32, hp *property) (*hevcConfig, error) {
+	c := &hevcConfig{lengthSize: hp.hvcc.lengthSize, sps: map[uint32]h265.SPS{}, pps: map[uint32]h265.PPS{}}
+	var sets []byte
+	for _, n := range hp.hvcc.nals {
+		if len(n) > 0 && n[0]>>1&0x3F < 32 { // parameter sets and SEI, not pictures
+			return nil, fmt.Errorf("%w: item %d: hvcC holds a coded slice", ErrInvalid, id)
+		}
+		sets = binary.BigEndian.AppendUint32(sets, uint32(len(n)))
+		sets = append(sets, n...)
+	}
+	var err error
+	if c.units, err = h265.SplitLengthPrefixed(sets, 4); err != nil {
+		return nil, fmt.Errorf("%w: hvcC: %w", ErrCorrupt, err)
+	}
+	for _, u := range c.units {
+		switch u.Type {
+		case h265.UnitSPS:
+			if s, err := h265.ParseSPS(u); err == nil {
+				c.sps[s.ID] = s
+			}
+		case h265.UnitPPS:
+			if p, err := h265.ParsePPS(u); err == nil {
+				c.pps[p.ID] = p
+			}
+		}
+	}
+	return c, nil
+}
+
+// slicePPSID reads slice_pic_parameter_set_id of a slice segment header (7.3.6.1): after
+// first_slice_segment_in_pic_flag, and no_output_of_prior_pics_flag for a random access
+// picture, it is an ue(v). It states a number below 64, so a longer code is refused.
+func slicePPSID(u h265.Unit) (uint32, bool) {
+	b := u.Unescape()
+	bit := func(i int) uint32 {
+		if i>>3 >= len(b) {
+			return 2 // past the end
+		}
+		return uint32(b[i>>3]>>(7-(i&7))) & 1
+	}
+	pos := 1
+	if u.Type.IsRandomAccess() {
+		pos++
+	}
+	zeros := 0
+	for bit(pos+zeros) == 0 {
+		if zeros++; zeros > 6 {
+			return 0, false
+		}
+	}
+	if bit(pos+zeros) != 1 {
+		return 0, false
+	}
+	v := uint32(1)
+	for i := 1; i <= zeros; i++ {
+		x := bit(pos + zeros + i)
+		if x > 1 {
+			return 0, false
+		}
+		v = v<<1 | x
+	}
+	return v - 1, true
+}
+
+// scanUnits walks the length-prefixed NAL units of item data without keeping them. An item
+// is one access unit of coded slices: only slice segments, SEI and access unit delimiters
+// are allowed (a parameter set in the data would replace the hvcC's, and the decoder
+// reads the picture against whichever it saw last). It refuses more than max units, more
+// than one picture, and slice segments that do not move forward through the picture (a
+// strictly increasing slice_segment_address, so no more segments than the picture has
+// coding tree blocks): a stream of tiny units, of pictures, or of segments that each start
+// the picture again must not cost memory or decoding time in proportion to a file that
+// states them by the million. A picture starts at a slice segment whose
+// first_slice_segment_in_pic_flag is set.
+func scanUnits(data []byte, cfg *hevcConfig, max int) error {
 	n, pictures := 0, 0
+	var prev *h265.SliceHeader // the last independent segment of the picture
+	last := int64(-1)          // the address of the segment before
 	for len(data) > 0 {
-		if len(data) < lengthSize {
+		if len(data) < cfg.lengthSize {
 			return fmt.Errorf("%w: a unit length is cut short", ErrCorrupt)
 		}
 		var l uint64
-		for _, b := range data[:lengthSize] {
+		for _, b := range data[:cfg.lengthSize] {
 			l = l<<8 | uint64(b)
 		}
-		data = data[lengthSize:]
+		data = data[cfg.lengthSize:]
 		if l > uint64(len(data)) {
 			return fmt.Errorf("%w: a unit of %d bytes runs past the item", ErrCorrupt, l)
 		}
@@ -294,46 +377,85 @@ func scanUnits(data []byte, lengthSize, max int) error {
 		}
 		u := data[:l]
 		data = data[l:]
-		if len(u) >= 3 && u[0]>>1&0x3F < 32 && u[2]&0x80 != 0 {
+		if len(u) < 2 {
+			return fmt.Errorf("%w: a NAL unit of %d bytes has no header", ErrCorrupt, len(u))
+		}
+		unit := h265.Unit{Type: h265.UnitType(u[0] >> 1 & 0x3F), Payload: u[2:]}
+		switch {
+		case unit.Type == h265.UnitAUD || unit.Type == h265.UnitPrefixSEI || unit.Type == h265.UnitSuffixSEI:
+			continue
+		case !unit.Type.IsSliceSegment():
+			return fmt.Errorf("%w: a NAL unit of type %d in item data (parameter sets belong in the hvcC)", ErrInvalid, unit.Type)
+		case len(u) < 3:
+			return fmt.Errorf("%w: a slice segment of %d bytes", ErrCorrupt, len(u))
+		}
+		if first := u[2]&0x80 != 0; first {
 			if pictures++; pictures > 1 {
 				return fmt.Errorf("%w: an item holds more than one picture", ErrInvalid)
 			}
+			prev, last = nil, -1
+		} else if pictures == 0 {
+			return fmt.Errorf("%w: a slice segment comes before the first of its picture", ErrCorrupt)
 		}
+		id, ok := slicePPSID(unit)
+		pps, found := cfg.pps[id]
+		sps, haveSPS := cfg.sps[pps.SPSID]
+		if !ok || !found || !haveSPS {
+			return fmt.Errorf("%w: a slice segment names a parameter set the hvcC does not hold", ErrCorrupt)
+		}
+		h, err := h265.ParseSliceSegmentHeaderFull(unit, sps, pps, prev)
+		if err != nil {
+			return fmt.Errorf("%w: slice segment header: %w", ErrCorrupt, err)
+		}
+		// (the header parser has refused an address outside the picture)
+		if int64(h.SegmentAddress) <= last {
+			return fmt.Errorf("%w: slice segment at address %d after %d", ErrInvalid, h.SegmentAddress, last)
+		}
+		last, prev = int64(h.SegmentAddress), &h
 	}
 	return nil
 }
 
+// hevcDecoder is what decodeHEVC needs of a decoder (a seam for the tests).
+type hevcDecoder interface {
+	Decode(h265.Unit) ([]h265.Output, error)
+	Flush() ([]h265.Output, error)
+}
+
+// step feeds the decoder one unit, or ends the stream when u is nil. A panic of the
+// decoder on a hostile stream is a corrupt picture, not the caller's crash.
+func step(dec hevcDecoder, u *h265.Unit) (out []h265.Output, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			out, err = nil, fmt.Errorf("%w: the decoder failed: %v", ErrCorrupt, r)
+		}
+	}()
+	if u == nil {
+		return dec.Flush()
+	}
+	return dec.Decode(*u)
+}
+
 // decodeHEVC decodes an hvc1 item to its picture with dec, which carries no state the
 // item needs: every item sends its parameter sets again, and a still picture is an IDR.
-func (f *file) decodeHEVC(dec *h265.Decoder, it *item, hp *property, w, h uint32) (*h265.DecodedPicture, error) {
+func (f *file) decodeHEVC(dec hevcDecoder, it *item, cfg *hevcConfig, w, h uint32) (*h265.DecodedPicture, error) {
 	data, err := f.itemData(it)
 	if err != nil {
 		return nil, err
 	}
-	if err := scanUnits(data, hp.hvcc.lengthSize, maxNALUnits); err != nil {
+	if err := scanUnits(data, cfg, maxNALUnits); err != nil {
 		return nil, fmt.Errorf("item %d: %w", it.id, err)
 	}
-	var sets []byte
-	for _, n := range hp.hvcc.nals {
-		if len(n) > 0 && n[0]>>1&0x3F < 32 { // parameter sets and SEI, not pictures
-			return nil, fmt.Errorf("%w: item %d: hvcC holds a coded slice", ErrInvalid, it.id)
-		}
-		sets = binary.BigEndian.AppendUint32(sets, uint32(len(n)))
-		sets = append(sets, n...)
-	}
-	units, err := h265.SplitLengthPrefixed(sets, 4)
-	if err != nil {
-		return nil, fmt.Errorf("%w: hvcC: %w", ErrCorrupt, err)
-	}
-	more, _ := h265.SplitLengthPrefixed(data, hp.hvcc.lengthSize) // scanUnits has walked this framing
-	units = append(units, more...)                                // the parameter sets, then the item
+	more, _ := h265.SplitLengthPrefixed(data, cfg.lengthSize) // scanUnits has walked this framing
+	units := make([]h265.Unit, 0, len(cfg.units)+len(more))
+	units = append(append(units, cfg.units...), more...) // the parameter sets, then the item
 	var pic *h265.DecodedPicture
 	for i := 0; i <= len(units); i++ {
 		var out []h265.Output
 		if i < len(units) {
-			out, err = dec.Decode(units[i])
+			out, err = step(dec, &units[i])
 		} else {
-			out, err = dec.Flush() // the end of the stream
+			out, err = step(dec, nil) // the end of the stream
 		}
 		if pic, err = firstPicture(pic, out, err); err != nil {
 			return nil, fmt.Errorf("item %d: %w", it.id, err)
@@ -390,25 +512,39 @@ func (f *file) decodeBase(pl *plan) (*h265.DecodedPicture, error) {
 		if err != nil {
 			return nil, err
 		}
-		return f.decodeHEVC(f.newDecoder(), pl.base, hp, pl.w, pl.h)
+		cfg, err := newHevcConfig(pl.base.id, hp)
+		if err != nil {
+			return nil, err
+		}
+		return f.decodeHEVC(f.newDecoder(), pl.base, cfg, pl.w, pl.h)
 	}
 	g := pl.grid
 	var out *h265.DecodedPicture
 	var first h265.DecodedPicture // the format of the first tile, kept after its planes are released
-	decoders := map[*property]*h265.Decoder{}
+	// One decoder is alive at a time, and it serves the tiles that share their hvcC (a
+	// grid's tiles all do), so that the planes of a tile are reused by the next. A tile
+	// with another hvcC replaces it: the memory the decoder limit allows is then spent
+	// once for the file, not once per distinct hvcC. The configuration of a property is
+	// built once.
+	var dec *h265.Decoder
+	var cur *property
+	cfgs := map[*property]*hevcConfig{}
 	for i, t := range g.tiles {
-		// one decoder for the tiles that share their hvcC (a grid's tiles all do), so that
-		// the planes of a tile are reused by the next
 		hp, err := f.hvccOf(t)
 		if err != nil {
 			return nil, err
 		}
-		dec := decoders[hp]
-		if dec == nil {
-			dec = f.newDecoder()
-			decoders[hp] = dec
+		cfg := cfgs[hp]
+		if cfg == nil {
+			if cfg, err = newHevcConfig(t.id, hp); err != nil {
+				return nil, err
+			}
+			cfgs[hp] = cfg
 		}
-		pic, err := f.decodeHEVC(dec, t, hp, g.tw, g.th)
+		if hp != cur {
+			dec, cur = f.newDecoder(), hp
+		}
+		pic, err := f.decodeHEVC(dec, t, cfg, g.tw, g.th)
 		if err != nil {
 			return nil, err
 		}

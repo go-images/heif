@@ -137,6 +137,38 @@ func DecodeConfigOptions(r io.Reader, o Options) (image.Config, error) {
 	return image.Config{ColorModel: f.colorModel(pl), Width: w, Height: h}, nil
 }
 
+// DecodeWork is the number of pixels the decoder processes to read the primary image,
+// from the head of the file and without decoding any picture. It is what a caller sets a
+// budget against: a grid decodes every tile in full, so a grid of large tiles cropped to
+// a sliver costs far more than the size DecodeConfig reports.
+func DecodeWork(r io.Reader, o Options) (int64, error) {
+	lim := o.Limits.withDefaults()
+	head, err := readHead(r, lim.MaxBytes)
+	if err != nil {
+		return 0, err
+	}
+	f, err := parseFile(head, lim)
+	if err != nil {
+		return 0, err
+	}
+	f.cfg = true
+	pl, err := f.primaryPlan()
+	if err != nil {
+		return 0, err
+	}
+	if g := pl.grid; g != nil {
+		// only meta was read, so the tile count is the number of tiles the grid refers to
+		// and the tile size is the ispe of the first (Decode refuses a grid that differs)
+		ps, _ := f.propsOf(g.tiles[0]) // a list that cannot be read names no ispe
+		sz := find(ps, "ispe")
+		if sz == nil || uint64(sz.w)*uint64(sz.h) > uint64(lim.MaxPixels) {
+			return 0, fmt.Errorf("%w: grid tile size", ErrInvalid)
+		}
+		return int64(len(f.refsOf("dimg", pl.base.id))) * int64(sz.w) * int64(sz.h), nil
+	}
+	return int64(pl.w) * int64(pl.h), nil
+}
+
 // colorModel is the colour model of the image Decode returns for a plan, which depends
 // on the bit depth of the item's hvcC and on whether a transformation applies.
 func (f *file) colorModel(pl *plan) color.Model {

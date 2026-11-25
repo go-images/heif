@@ -8,6 +8,7 @@ import (
 	"errors"
 	"image"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -53,12 +54,12 @@ func TestSecurityNALUnitBomb(t *testing.T) {
 		}
 	}
 	// one extent, so nothing is copied: the units themselves are bounded
-	unit := []byte{1, 0x4E}
+	unit := []byte{2, 0x4E, 0x01} // an SEI unit of its two header bytes
 	for _, tc := range []struct {
 		n    int
 		want error
 	}{{maxNALUnits, nil}, {maxNALUnits + 1, ErrTooManyItems}} {
-		err := scanUnits(bytes.Repeat(unit, tc.n), 1, maxNALUnits)
+		err := scanUnits(bytes.Repeat(unit, tc.n), &hevcConfig{lengthSize: 1}, maxNALUnits)
 		if !errors.Is(err, tc.want) || tc.want == nil && err != nil {
 			t.Errorf("%d units: %v", tc.n, err)
 		}
@@ -125,19 +126,27 @@ func TestSecuritySecondPictureRefused(t *testing.T) {
 	if err := decodeDefault(single(bad, 36, 22).bytes()); !errors.Is(err, ErrInvalid) {
 		t.Errorf("a slice in the hvcC: %v", err)
 	}
-	// a last unit of no bytes is a unit, not a cut length
-	if err := scanUnits([]byte{0}, 1, 10); err != nil {
+	// an empty unit has no header, and a slice segment of two bytes no flag
+	if err := scanUnits([]byte{0}, &hevcConfig{lengthSize: 1}, 10); !errors.Is(err, ErrCorrupt) {
 		t.Errorf("an empty unit: %v", err)
 	}
 	// an empty parameter set in the hvcC is not read past its end
 	_ = decodeDefault(single(coded{hvcC: hvcCBox(1, 8, 8, 4, [][]byte{{}}), data: c.data}, 36, 22).bytes())
-	// and a unit too short to say whether it starts a picture
-	if err := scanUnits([]byte{0, 0, 0, 2, 2 << 1, 1}, 4, 10); err != nil {
-		t.Errorf("a short unit: %v", err)
+	cfg4 := &hevcConfig{lengthSize: 4}
+	if err := scanUnits([]byte{0, 0, 0, 2, 2 << 1, 1}, cfg4, 10); !errors.Is(err, ErrCorrupt) {
+		t.Errorf("a short slice: %v", err)
 	}
-	for _, data := range [][]byte{{0, 0}, {0, 0, 0, 9, 1}} {
-		if err := scanUnits(data, 4, 10); !errors.Is(err, ErrCorrupt) {
-			t.Errorf("%v: %v", data, err)
+	for _, tc := range []struct {
+		data []byte
+		why  string
+	}{
+		{[]byte{0, 0}, "cut short"},
+		{[]byte{0, 0, 0}, "cut short"},
+		{[]byte{0, 0, 0, 0}, "no header"}, // a length and nothing after it is whole
+		{[]byte{0, 0, 0, 9, 1}, "runs past"},
+	} {
+		if err := scanUnits(tc.data, cfg4, 10); !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), tc.why) {
+			t.Errorf("%v: %v, want %q", tc.data, err, tc.why)
 		}
 	}
 }

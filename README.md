@@ -22,6 +22,7 @@ cfg, format, err := image.DecodeConfig(r)
 | `Decode(r)` | the primary image as an `image.Image` |
 | `DecodeOptions(r, Options)` | the same with explicit `Limits`; returns a `*Result` with `Image`, `ICCProfile`, `Nclx` and `HasAlpha` |
 | `DecodeConfig(r)` / `DecodeConfigOptions` | size and colour model from the head of the file, without decoding any picture |
+| `DecodeWork(r, opts)` | the pixels decoding the primary image will process (every tile of a grid, however far it is cropped), from the head of the file: what a caller sets a budget against |
 
 The result is an `*image.YCbCr` or `*image.Gray` sharing the decoder's planes when nothing
 needs converting (8-bit, full-range BT.601, no transform), otherwise an `*image.RGBA`,

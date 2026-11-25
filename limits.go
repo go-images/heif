@@ -22,8 +22,12 @@ type Limits struct {
 	// MaxItems is the most items, references and property associations the reader
 	// accepts in one box (default 16384).
 	MaxItems int
-	// MaxDecoderBytes bounds the memory of the HEVC decoder's picture buffer
-	// (default 1 GiB).
+	// MaxDecoderBytes bounds the memory of the HEVC decoder's picture buffer, as the
+	// decoder estimates it for the pictures the stream states: 9 bytes a luma sample of a
+	// 4:2:0 picture, for each of the pictures its buffer may hold (default 4 GiB, which
+	// holds the 4 pictures an x265 stream states at 8192x8192). An item holds one picture
+	// and one decoder is alive at a time, so what is allocated is that of one picture.
+	// It is the limit of the file, not of each tile.
 	MaxDecoderBytes int64
 }
 
@@ -36,7 +40,7 @@ func DefaultLimits() Limits {
 		MaxBoxes:        1 << 16,
 		MaxDepth:        8,
 		MaxItems:        1 << 14,
-		MaxDecoderBytes: 1 << 30,
+		MaxDecoderBytes: 4 << 30,
 	}
 }
 
