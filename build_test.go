@@ -97,7 +97,11 @@ func hvcCBox(chroma, luma, chromaBits, lengthSize int, sets [][]byte) []byte {
 	h[18] = 0xF8 | uint8(chromaBits-8)
 	h = append(h, 0xFC|uint8(lengthSize-1), uint8(len(sets)))
 	for _, s := range sets {
-		h = append(h, 0x80|s[0]>>1&0x3F)
+		typ := uint8(0) // an empty unit has no type to state
+		if len(s) > 0 {
+			typ = s[0] >> 1 & 0x3F
+		}
+		h = append(h, 0x80|typ)
 		h = append(h, u16(1, uint16(len(s)))...)
 		h = append(h, s...)
 	}

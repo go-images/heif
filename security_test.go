@@ -114,6 +114,12 @@ func TestSecuritySecondPictureRefused(t *testing.T) {
 	if err := decodeDefault(single(bad, 36, 22).bytes()); !errors.Is(err, ErrInvalid) {
 		t.Errorf("a slice in the hvcC: %v", err)
 	}
+	// a last unit of no bytes is a unit, not a cut length
+	if err := scanUnits([]byte{0}, 1, 10); err != nil {
+		t.Errorf("an empty unit: %v", err)
+	}
+	// an empty parameter set in the hvcC is not read past its end
+	_ = decodeDefault(single(coded{hvcC: hvcCBox(1, 8, 8, 4, [][]byte{{}}), data: c.data}, 36, 22).bytes())
 	// and a unit too short to say whether it starts a picture
 	if err := scanUnits([]byte{0, 0, 0, 2, 2 << 1, 1}, 4, 10); err != nil {
 		t.Errorf("a short unit: %v", err)
@@ -195,6 +201,23 @@ func TestSecurityAuxiliaryReferences(t *testing.T) {
 		}
 		if (sniffed == nil) != (err == nil) {
 			t.Errorf("%s: image.DecodeConfig says %v, DecodeConfig %v", tc.name, sniffed, err)
+		}
+	}
+}
+
+// The reference targets of a file are bounded to four for each item the limit allows.
+func TestSecurityReferenceTargetBound(t *testing.T) {
+	defer guard(t)
+	lim := Limits{MaxItems: 4}.withDefaults()
+	for _, tc := range []struct {
+		n    int
+		want error
+	}{{16, nil}, {17, ErrTooManyItems}} {
+		iref := fbox("iref", 0, 0, mkbox("auxl", u16(9), u16(uint16(tc.n)), u16(make([]uint16, tc.n)...)))
+		data := bytes.Join([][]byte{mkbox("ftyp", []byte("heic"), u32(0)), mkbox("meta", u32(0), hdlrOK, pitmOK, iref)}, nil)
+		_, err := parseFile(data, lim)
+		if !errors.Is(err, tc.want) || tc.want == nil && err != nil {
+			t.Errorf("%d targets: %v", tc.n, err)
 		}
 	}
 }
