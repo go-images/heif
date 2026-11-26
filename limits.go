@@ -11,6 +11,15 @@ type Limits struct {
 	MaxBytes int64
 	// MaxPixels is the most pixels of one image: a tile, a grid, the decoded base image
 	// and the result (default 1<<26, which holds a 48-megapixel photo and 8192x8192).
+	//
+	// It sets the memory of a decode: the planes of the HEVC decoder and the converted
+	// image are alive together, 1.5 bytes a pixel for the planes of an 8-bit 4:2:0 picture
+	// and 4 for its RGBA result, 5.5 bytes a pixel live at the peak (measured heap: 352 to
+	// 437 MiB, the garbage the collector has not yet taken included, for a flat 8192x8192
+	// picture turned by irot, from a 17 KB file; it was 608 MiB when the picture was
+	// converted and then turned). 16-bit 4:4:4 holds 6 for the planes and 8 for the result, 14 bytes a
+	// pixel, which is 896 MiB at the default. A caller with less memory sets MaxPixels to
+	// its budget divided by those figures.
 	MaxPixels int64
 	// MaxTiles is the most tiles of one grid (default 4096).
 	MaxTiles int

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -396,11 +397,11 @@ func TestRound2SliceSegmentAddresses(t *testing.T) {
 	}
 	// a slice that names a parameter set the hvcC does not hold
 	none, _ := newHevcConfig(1, &property{hvcc: hvcC{lengthSize: 4}})
-	if err := scanUnits(lp(s.slice), none, maxNALUnits); !errors.Is(err, ErrCorrupt) {
+	if err := scanUnits(lp(s.slice), none, maxNALUnits); !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), "does not hold") {
 		t.Errorf("no parameter sets: %v", err)
 	}
 	onlyPPS, _ := newHevcConfig(1, &property{hvcc: hvcC{lengthSize: 4, nals: s.sets[2:]}})
-	if err := scanUnits(lp(s.slice), onlyPPS, maxNALUnits); !errors.Is(err, ErrCorrupt) {
+	if err := scanUnits(lp(s.slice), onlyPPS, maxNALUnits); !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), "does not hold") {
 		t.Errorf("a PPS without its SPS: %v", err)
 	}
 }

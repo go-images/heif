@@ -92,14 +92,14 @@ func render(pic *h265.DecodedPicture, c *nclx, pl placement) (image.Image, error
 	}
 	var r *raster
 	if pic.Components == 1 {
-		r, err = convertGray(pic, full)
+		r, err = convertGray(pic, full, pl)
 	} else {
-		r, err = convertColour(pic, hs, vs, kr, kb, full)
+		r, err = convertColour(pic, hs, vs, kr, kb, full, pl)
 	}
 	if err != nil {
 		return nil, err
 	}
-	return place(r, pl).image(), nil
+	return r.image(), nil
 }
 
 // window returns the rectangle of a w x h picture that the placement selects when it only
@@ -189,26 +189,29 @@ func clamp16(v, top int64) int64 {
 	return min(max((v+32768)>>16, 0), top)
 }
 
-func convertGray(pic *h265.DecodedPicture, full bool) (*raster, error) {
+// convertGray and convertColour make the raster of a picture, cropped and turned by pl as
+// each pixel is written: the planes and the result are the only buffers there are.
+func convertGray(pic *h265.DecodedPicture, full bool, pl placement) (*raster, error) {
 	wide, outMax := outputBits(pic)
 	bpp := 1
 	if wide {
 		bpp = 2
 	}
 	p := &pic.Planes[0]
-	r, err := newRaster(p.Width, p.Height, bpp)
+	t, err := newTarget(p.Width, p.Height, bpp, pl)
 	if err != nil {
 		return nil, err
 	}
+	r := t.r
 	lut := lumaLUT(pic.BitDepth[0], full, outMax)
-	for y := 0; y < p.Height; y++ {
-		o := y * r.stride
-		for x := 0; x < p.Width; x++ {
+	for y := t.crop.Min.Y; y < t.crop.Max.Y; y++ {
+		for x := t.crop.Min.X; x < t.crop.Max.X; x++ {
 			v := clamp16(lut[sample(p, y*p.Stride+x)], int64(outMax))
+			o := t.at(x, y)
 			if wide {
-				r.pix[o+2*x], r.pix[o+2*x+1] = byte(v>>8), byte(v)
+				r.pix[o], r.pix[o+1] = byte(v>>8), byte(v)
 			} else {
-				r.pix[o+x] = byte(v)
+				r.pix[o] = byte(v)
 			}
 		}
 	}
@@ -222,17 +225,18 @@ func sample(p *h265.Plane, i int) int {
 	return int(p.Pix16[i])
 }
 
-func convertColour(pic *h265.DecodedPicture, hs, vs uint, kr, kb float64, full bool) (*raster, error) {
+func convertColour(pic *h265.DecodedPicture, hs, vs uint, kr, kb float64, full bool, pl placement) (*raster, error) {
 	wide, outMax := outputBits(pic)
 	bpp := 4
 	if wide {
 		bpp = 8
 	}
 	yp, bp, rp := &pic.Planes[0], &pic.Planes[1], &pic.Planes[2]
-	r, err := newRaster(yp.Width, yp.Height, bpp)
+	t, err := newTarget(yp.Width, yp.Height, bpp, pl)
 	if err != nil {
 		return nil, err
 	}
+	r := t.r
 	kg := 1 - kr - kb
 	yl := lumaLUT(pic.BitDepth[0], full, outMax)
 	rCr := chromaLUT(pic.BitDepth[2], full, outMax, 2*(1-kr))
@@ -240,21 +244,21 @@ func convertColour(pic *h265.DecodedPicture, hs, vs uint, kr, kb float64, full b
 	gCb := chromaLUT(pic.BitDepth[1], full, outMax, -2*(1-kb)*kb/kg)
 	gCr := chromaLUT(pic.BitDepth[2], full, outMax, -2*(1-kr)*kr/kg)
 	om := int64(outMax)
-	for y := 0; y < yp.Height; y++ {
-		o := y * r.stride
+	for y := t.crop.Min.Y; y < t.crop.Max.Y; y++ {
 		cy := (y >> vs) * bp.Stride
-		for x := 0; x < yp.Width; x++ {
+		for x := t.crop.Min.X; x < t.crop.Max.X; x++ {
 			l := yl[sample(yp, y*yp.Stride+x)]
 			cb := sample(bp, cy+x>>hs)
 			cr := sample(rp, (y>>vs)*rp.Stride+x>>hs)
 			rr := clamp16(l+rCr[cr], om)
 			gg := clamp16(l+gCb[cb]+gCr[cr], om)
 			bb := clamp16(l+bCb[cb], om)
+			o := t.at(x, y)
 			if wide {
-				q := r.pix[o+8*x : o+8*x+8 : o+8*x+8]
+				q := r.pix[o : o+8 : o+8]
 				q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7] = byte(rr>>8), byte(rr), byte(gg>>8), byte(gg), byte(bb>>8), byte(bb), 0xFF, 0xFF
 			} else {
-				q := r.pix[o+4*x : o+4*x+4 : o+4*x+4]
+				q := r.pix[o : o+4 : o+4]
 				q[0], q[1], q[2], q[3] = byte(rr), byte(gg), byte(bb), 0xFF
 			}
 		}

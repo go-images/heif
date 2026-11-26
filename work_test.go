@@ -25,12 +25,16 @@ func TestDecodeWork(t *testing.T) {
 	c := loadCoded(t, "yuv420p", 1, 8)
 	const cols = 8
 	w := uint32((cols-1)*4096 + 1)
+	s := loadStream(t, "flat4096")
+	big := coded{hvcC: hvcCBox(1, 8, 8, 4, s.sets), data: append(lp(s.rest...), lp(s.slice)...)}
 	for name, tc := range map[string]struct {
 		data []byte
 		want int64
 	}{
-		"single":                {single(c, 36, 22).bytes(), 36 * 22},
-		"grid cropped to a row": {gridFile(c, 4096, 4096, 1, cols, w, 1, gridDesc(1, cols, w, 1, true)).bytes(), cols * 4096 * 4096},
+		// the picture of 36x22 is coded as 40x24 and cropped: 960 pixels are decoded
+		"single":                {single(c, 36, 22).bytes(), 40 * 24},
+		"cropped tiles":         {gridFile(c, 36, 22, 64, 64, 64*36, 64*22, gridDesc(64, 64, 64*36, 64*22, false)).bytes(), 64 * 64 * 40 * 24},
+		"grid cropped to a row": {gridFile(big, 4096, 4096, 1, cols, w, 1, gridDesc(1, cols, w, 1, true)).bytes(), cols * 4096 * 4096},
 	} {
 		got, err := workOf(t, name, tc.data, Limits{})
 		if err != nil || got != tc.want {

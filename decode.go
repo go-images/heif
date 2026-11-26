@@ -234,13 +234,7 @@ func (f *file) parseGrid(it *item, ps []*property) (*grid, error) {
 		uint64(g.rows)*uint64(g.th) < uint64(g.h) || uint64(g.rows-1)*uint64(g.th) >= uint64(g.h) {
 		return nil, fmt.Errorf("%w: %dx%d tiles of %dx%d do not make a %dx%d image", ErrInvalid, g.cols, g.rows, g.tw, g.th, g.w, g.h)
 	}
-	// every tile is decoded in full, and extents may overlap, so the decoding work is
-	// bounded by the pixels of all the tiles: a grid of ordinary tiles holds less than
-	// four times its own pixels
-	// (divided, so that nothing overflows)
-	if uint64(g.tw)*uint64(g.th)/4 > uint64(f.lim.MaxPixels)/uint64(g.rows*g.cols) {
-		return nil, fmt.Errorf("%w: %d tiles of %dx%d", ErrImageTooLarge, g.rows*g.cols, g.tw, g.th)
-	}
+	// (the work of decoding every tile is bounded by codedWork, from the parameter sets)
 	return g, nil
 }
 
@@ -309,6 +303,88 @@ func newHevcConfig(id uint32, hp *property) (*hevcConfig, error) {
 		}
 	}
 	return c, nil
+}
+
+// codedPixels is the number of pixels the decoder makes for a picture of this configuration,
+// which the SPS states and the ispe of the item only claims: the coded size, before the
+// conformance window takes its margin off. Every SPS of the hvcC must give the output size
+// the item states (so a 1x1 ispe cannot buy a full-size decode before it is refused), and a
+// coded size over max is refused. The largest coded size of the sets is returned, since
+// the slice decides which of them applies.
+func (c *hevcConfig) codedPixels(id uint32, w, h uint32, max int64) (int64, error) {
+	// A set that does not parse costs nothing here: the decoder reads it with the same
+	// parser and refuses the stream.
+	var most uint64
+	for _, s := range c.sps {
+		if s.Width != w || s.Height != h {
+			return 0, fmt.Errorf("%w: item %d is %dx%d by its parameter set but states %dx%d", ErrInvalid, id, s.Width, s.Height, w, h)
+		}
+		if px := uint64(s.CodedWidth) * uint64(s.CodedHeight); px > uint64(max) {
+			return 0, fmt.Errorf("%w: item %d codes %dx%d pixels", ErrImageTooLarge, id, s.CodedWidth, s.CodedHeight)
+		} else if px > most {
+			most = px
+		}
+	}
+	return int64(most), nil
+}
+
+// codedWork is the pixels decoding the base image of a plan processes, read from the
+// parameter sets of its items: every tile of a grid, at the coded size. It refuses an item
+// whose parameter set does not state the size its ispe does, and a total over four times
+// the pixel limit (a grid of ordinary tiles holds less), before any picture is decoded.
+// cfgs receives the configuration of each item, built once for each hvcC.
+func (f *file) codedWork(pl *plan, cfgs map[*item]*hevcConfig) (int64, error) {
+	built := map[*property]*hevcConfig{}
+	items, w, h, budget := []*item{pl.base}, pl.w, pl.h, f.lim.MaxPixels
+	if g := pl.grid; g != nil {
+		items, w, h, budget = g.tiles, g.tw, g.th, 4*f.lim.MaxPixels
+		if g.tw == 0 { // only meta was read: the tiles are the references, the size the first's
+			to := f.refsOf("dimg", pl.base.id)
+			if len(to) > f.lim.MaxTiles {
+				return 0, fmt.Errorf("%w: %d tiles", ErrTooManyTiles, len(to))
+			}
+			items = items[:0:0]
+			for _, id := range to {
+				t := f.byID[id]
+				if t == nil || t.typ != "hvc1" {
+					return 0, fmt.Errorf("%w: grid %d tile %d is not an hvc1 item", ErrUnsupported, pl.base.id, id)
+				}
+				items = append(items, t)
+			}
+			tps, err := f.propsOf(items[0])
+			if err != nil {
+				return 0, err
+			}
+			sz := find(tps, "ispe")
+			if sz == nil || sz.w == 0 || sz.h == 0 {
+				return 0, fmt.Errorf("%w: grid tile size", ErrInvalid)
+			}
+			w, h = sz.w, sz.h
+		}
+	}
+	var total int64
+	for _, it := range items {
+		hp, err := f.hvccOf(it)
+		if err != nil {
+			return 0, err
+		}
+		cfg := built[hp]
+		if cfg == nil {
+			if cfg, err = newHevcConfig(it.id, hp); err != nil {
+				return 0, err
+			}
+			built[hp] = cfg
+		}
+		cfgs[it] = cfg
+		px, err := cfg.codedPixels(it.id, w, h, f.lim.MaxPixels)
+		if err != nil {
+			return 0, err
+		}
+		if total += px; total > budget {
+			return 0, fmt.Errorf("%w: the pictures of %d items hold more than %d pixels", ErrImageTooLarge, len(items), budget)
+		}
+	}
+	return total, nil
 }
 
 // slicePPSID reads slice_pic_parameter_set_id of a slice segment header (7.3.6.1): after
@@ -507,16 +583,15 @@ func checkPlanes(pic *h265.DecodedPicture) error {
 
 // decodeBase decodes the coded base image of a plan.
 func (f *file) decodeBase(pl *plan) (*h265.DecodedPicture, error) {
+	// The sizes the parameter sets state are checked, and their pixels counted, before any
+	// picture is decoded: the ispe of an item is a claim, and the decoder makes what the
+	// SPS says.
+	cfgs := map[*item]*hevcConfig{}
+	if _, err := f.codedWork(pl, cfgs); err != nil {
+		return nil, err
+	}
 	if pl.grid == nil {
-		hp, err := f.hvccOf(pl.base)
-		if err != nil {
-			return nil, err
-		}
-		cfg, err := newHevcConfig(pl.base.id, hp)
-		if err != nil {
-			return nil, err
-		}
-		return f.decodeHEVC(f.newDecoder(), pl.base, cfg, pl.w, pl.h)
+		return f.decodeHEVC(f.newDecoder(), pl.base, cfgs[pl.base], pl.w, pl.h)
 	}
 	g := pl.grid
 	var out *h265.DecodedPicture
@@ -527,22 +602,11 @@ func (f *file) decodeBase(pl *plan) (*h265.DecodedPicture, error) {
 	// once for the file, not once per distinct hvcC. The configuration of a property is
 	// built once.
 	var dec *h265.Decoder
-	var cur *property
-	cfgs := map[*property]*hevcConfig{}
+	var cur *hevcConfig
 	for i, t := range g.tiles {
-		hp, err := f.hvccOf(t)
-		if err != nil {
-			return nil, err
-		}
-		cfg := cfgs[hp]
-		if cfg == nil {
-			if cfg, err = newHevcConfig(t.id, hp); err != nil {
-				return nil, err
-			}
-			cfgs[hp] = cfg
-		}
-		if hp != cur {
-			dec, cur = f.newDecoder(), hp
+		cfg := cfgs[t] // the same one for the tiles that share an hvcC
+		if cfg != cur {
+			dec, cur = f.newDecoder(), cfg
 		}
 		pic, err := f.decodeHEVC(dec, t, cfg, g.tw, g.th)
 		if err != nil {

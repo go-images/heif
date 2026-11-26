@@ -3,7 +3,10 @@
 
 package heif
 
-import "image"
+import (
+	"fmt"
+	"image"
+)
 
 // orient is one of the eight orientations of a rectangular image (the dihedral group D4):
 // an optional transposition, then an optional left-right and an optional top-bottom flip
@@ -119,55 +122,54 @@ func compose(xs []xform, w, h int) (placement, error) {
 	return placement{crop: rect, o: o}, nil
 }
 
-// reorient returns the raster turned to an orientation, in one pass, as a new raster. The
-// pixel at (u, v) of the result is that of the source at (a, b), or (b, a) when the
-// orientation transposes, where a and b are u and v, each counted from the far edge when
-// its flip is set.
-//
-// It cannot fail for want of room: the result is as large as a raster that already exists.
-func reorient(r *raster, o orient) *raster {
-	w2, h2 := r.w, r.h
-	if o&oSwap != 0 {
-		w2, h2 = r.h, r.w
-	}
-	b := r.bpp
-	out := &raster{pix: make([]byte, w2*h2*b), stride: w2 * b, w: w2, h: h2, bpp: b}
-	for v := 0; v < h2; v++ {
-		bb := v
-		if o&oFlipY != 0 {
-			bb = h2 - 1 - v
-		}
-		for u := 0; u < w2; u++ {
-			a := u
-			if o&oFlipX != 0 {
-				a = w2 - 1 - u
-			}
-			sx, sy := a, bb
-			if o&oSwap != 0 {
-				sx, sy = bb, a
-			}
-			copy(out.pix[v*out.stride+u*b:][:b], r.pix[sy*r.stride+sx*b:][:b])
-		}
-	}
-	return out
+// target is the raster a w x h picture is converted into, cropped and turned as it is
+// written: the colour conversion puts each pixel of the crop at its place in the result,
+// so no copy of the unturned picture exists. The pixel at (x, y) of the picture, counted
+// from the corner of the crop as (cx, cy), lies at base + cx*sx + cy*sy bytes of r.pix.
+// A pixel of the result at (u, v) is that of the cropped picture at (a, b), or (b, a) when
+// the orientation transposes, where a and b are u and v, each counted from the far edge
+// when its flip is set; this is that map taken the other way round.
+type target struct {
+	r      *raster
+	crop   image.Rectangle
+	base   int
+	sx, sy int
 }
 
-// crop returns the rectangle of a raster, sharing the pixels.
-func crop(r *raster, rect image.Rectangle) *raster {
-	return &raster{
-		pix:    r.pix[rect.Min.Y*r.stride+rect.Min.X*r.bpp:],
-		stride: r.stride,
-		w:      rect.Dx(), h: rect.Dy(), bpp: r.bpp,
+// newTarget makes the raster for a w x h picture under a placement. A crop that does not
+// lie inside the picture is refused.
+func newTarget(w, h, bpp int, p placement) (*target, error) {
+	rect := p.crop
+	if rect.Empty() {
+		rect = image.Rect(0, 0, w, h)
 	}
+	if !rect.In(image.Rect(0, 0, w, h)) {
+		return nil, fmt.Errorf("%w: crop %v outside the %dx%d picture", ErrInvalid, rect, w, h)
+	}
+	ow, oh := p.dims(w, h)
+	r, err := newRaster(ow, oh, bpp)
+	if err != nil {
+		return nil, err
+	}
+	// a runs along the width of the result and b along its height, from either edge
+	t := &target{r: r, crop: rect}
+	da, db := bpp, r.stride
+	if p.o&oFlipX != 0 {
+		t.base += (ow - 1) * bpp
+		da = -bpp
+	}
+	if p.o&oFlipY != 0 {
+		t.base += (oh - 1) * r.stride
+		db = -r.stride
+	}
+	t.sx, t.sy = da, db
+	if p.o&oSwap != 0 {
+		t.sx, t.sy = db, da
+	}
+	return t, nil
 }
 
-// place crops a raster and turns the result.
-func place(r *raster, p placement) *raster {
-	if !p.crop.Empty() {
-		r = crop(r, p.crop)
-	}
-	if p.o == 0 {
-		return r
-	}
-	return reorient(r, p.o)
+// at is the offset in r.pix of the pixel (x, y) of the picture, which lies in the crop.
+func (t *target) at(x, y int) int {
+	return t.base + (x-t.crop.Min.X)*t.sx + (y-t.crop.Min.Y)*t.sy
 }

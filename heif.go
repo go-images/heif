@@ -156,17 +156,9 @@ func DecodeWork(r io.Reader, o Options) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if g := pl.grid; g != nil {
-		// only meta was read, so the tile count is the number of tiles the grid refers to
-		// and the tile size is the ispe of the first (Decode refuses a grid that differs)
-		ps, _ := f.propsOf(g.tiles[0]) // a list that cannot be read names no ispe
-		sz := find(ps, "ispe")
-		if sz == nil || uint64(sz.w)*uint64(sz.h) > uint64(lim.MaxPixels) {
-			return 0, fmt.Errorf("%w: grid tile size", ErrInvalid)
-		}
-		return int64(len(f.refsOf("dimg", pl.base.id))) * int64(sz.w) * int64(sz.h), nil
-	}
-	return int64(pl.w) * int64(pl.h), nil
+	// the coded sizes of the parameter sets, which Decode checks before it decodes a
+	// picture, and not the ispe of the items, which only claims a size
+	return f.codedWork(pl, map[*item]*hevcConfig{})
 }
 
 // colorModel is the colour model of the image Decode returns for a plan, which depends

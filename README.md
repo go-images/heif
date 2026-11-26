@@ -47,6 +47,18 @@ res, err := heif.DecodeOptions(r, heif.Options{Limits: heif.Limits{
 }})
 ```
 
+`MaxPixels` is also the memory bound of a decode. The HEVC planes and the converted image are
+alive together, and a crop or rotation is written as the pixels are converted, with no copy
+of the unturned picture: 5.5 bytes a pixel live at the peak for an 8-bit 4:2:0 picture
+(measured heap, garbage included: 352 to 437 MiB for a flat 8192x8192 file of 17 KB with
+`irot`, against 608 MiB when the picture was converted and then turned), 14 for 16-bit 4:4:4 (6 for the planes, 8 for the result; 896 MiB
+at the default `1<<26`). Set `MaxPixels` to your budget divided by that figure.
+
+The coded size comes from the SPS of the `hvcC`, not from `ispe`: an item whose parameter set
+does not state the size its `ispe` does is refused before any picture is decoded, and
+`DecodeWork` reports the coded size (a picture cropped by its conformance window counts as the
+whole coded picture, and every tile of a grid counts, up to four times `MaxPixels`).
+
 `Limits` also bounds tiles, boxes, nesting depth, items and the decoder's memory
 (`MaxTiles`, `MaxBoxes`, `MaxDepth`, `MaxItems`, `MaxDecoderBytes`). A zero field takes the
 default. Refusals are named errors you can test with `errors.Is`: `ErrNotHEIF`, `ErrTruncated`,

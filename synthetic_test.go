@@ -85,14 +85,14 @@ func TestRenderRefusals(t *testing.T) {
 	// pictures too large for one buffer: the planes need no samples to be refused
 	big := &h265.DecodedPicture{Components: 1, BitDepth: [3]int{8, 8, 8}}
 	big.Planes[0] = h265.Plane{Width: 1 << 16, Height: 1 << 16, Stride: 1 << 16}
-	if _, err := convertGray(big, true); !errors.Is(err, ErrImageTooLarge) {
+	if _, err := convertGray(big, true, placement{}); !errors.Is(err, ErrImageTooLarge) {
 		t.Errorf("gray: %v", err)
 	}
 	big3 := &h265.DecodedPicture{Components: 3, BitDepth: [3]int{8, 8, 8}}
 	for c := range big3.Planes {
 		big3.Planes[c] = h265.Plane{Width: 1 << 16, Height: 1 << 16, Stride: 1 << 16}
 	}
-	if _, err := convertColour(big3, 0, 0, 0.299, 0.114, true); !errors.Is(err, ErrImageTooLarge) {
+	if _, err := convertColour(big3, 0, 0, 0.299, 0.114, true, placement{}); !errors.Is(err, ErrImageTooLarge) {
 		t.Errorf("colour: %v", err)
 	}
 	if _, err := render(big, nil, placement{}); !errors.Is(err, ErrImageTooLarge) {
