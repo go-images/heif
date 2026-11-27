@@ -427,6 +427,24 @@ func TestRound2SliceRestartBomb(t *testing.T) {
 	}
 }
 
+// Overlapping or re-addressed slice segments (the reviewer's F1 reproducer) on the 4096x4096
+// picture, through the whole decoder pinned in go.mod (h265 v0.24.2 refuses them too): a named
+// error before any picture is made, inside the absolute ceilings of refused.
+func TestRound2OverlappingSegmentsRefusedBeforeDecode(t *testing.T) {
+	defer guard(t)
+	s := loadStream(t, "flat4096")
+	at := func(addr uint64) []byte { return nonFirst(t, s.slice, s.sps, s.pps, addr) }
+	n := ctbsOf(s.sps)
+	for name, nals := range map[string][][]byte{
+		"restart at 0":        {s.slice, at(0)},
+		"same address twice":  {s.slice, at(7), at(7)},
+		"backwards":           {s.slice, at(n - 1), at(n / 2)},
+		"overlap after first": {s.slice, at(1), at(1), at(1)},
+	} {
+		refused(t, name, s.file(lp(nals...), 4096, 4096), ErrInvalid)
+	}
+}
+
 // The hostile files of the first round again, against absolute ceilings: the bounds of
 // security_test.go are relative to what reading the file costs, which is how a defect that
 // cost a decode per segment went by.
