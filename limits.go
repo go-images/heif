@@ -14,20 +14,22 @@ type Limits struct {
 	//
 	// It sets the memory of a decode: the planes of the HEVC decoder and the converted
 	// image are alive together, 1.5 bytes a pixel for the planes of an 8-bit 4:2:0 picture
-	// and 4 for its RGBA result, 5.5 bytes a pixel live at the peak (measured heap: 352 to
-	// 437 MiB, the garbage the collector has not yet taken included, for a flat 8192x8192
-	// picture turned by irot, from a 17 KB file; it was 608 MiB when the picture was
-	// converted and then turned). 16-bit 4:4:4 holds 6 for the planes and 8 for the result, 14 bytes a
-	// pixel. MaxMemory bounds that product; MaxPixels bounds the size of a picture.
+	// and 4 for its RGBA result, 5.5 bytes a pixel live at the peak. MaxMemory bounds
+	// that product; MaxPixels bounds the size of a picture (a value above 2^40 is
+	// lowered to 2^40).
 	MaxPixels int64
-	// MaxMemory is the most memory a decode may hold at its peak, estimated before
-	// anything is decoded from the parameter sets (default 320 MiB): the planes of the
-	// coded picture (1.5 bytes a pixel for 8-bit 4:2:0, 6 for 16-bit 4:4:4; a grid holds
-	// those of one tile and of the assembled picture) plus the converted result (4 bytes a
-	// pixel, 8 for 16 bits, 1 or 2 for grey). At the default a 48-megapixel 8-bit 4:2:0
-	// photo (about 250 MiB) is decoded, 8192x8192 8-bit 4:2:0 (352 MiB) is not, and 16-bit
-	// 4:4:4 stops at about 24 megapixels. The measured peak heap stays under 400 MiB at
-	// the limit (see the README). DecodeWork applies the same check.
+	// MaxMemory is the most live data a decode may need, estimated before anything is
+	// decoded from the parameter sets (default 320 MiB): the planes of the coded picture
+	// (1.5 bytes a pixel for 8-bit 4:2:0, 6 for 16-bit 4:4:4; a grid holds those of one
+	// tile and of the assembled picture) plus the converted result (4 bytes a pixel, 8
+	// for 16 bits, 1 or 2 for grey). It is an estimate of live data, not a bound of the
+	// heap: the peak heap, the garbage the collector has not yet taken included, is about
+	// 1.25 times MaxMemory (measured 437 MiB against an estimate of 352, so about 400 MiB
+	// at the 320 MiB default). It does not count the input: reading the file and
+	// assembling an item hold up to 2 times MaxBytes besides. At the default a
+	// 48-megapixel 8-bit 4:2:0 photo (about 250 MiB) is decoded, 8192x8192 8-bit 4:2:0
+	// (352 MiB) is not, 10-bit 4:2:2 (12 bytes a pixel) stops at about 28 megapixels and
+	// 16-bit 4:4:4 (14) at about 24. DecodeWork applies the same check.
 	MaxMemory int64
 	// MaxTiles is the most tiles of one grid (default 4096).
 	MaxTiles int
@@ -47,6 +49,11 @@ type Limits struct {
 	// It is the limit of the file, not of each tile.
 	MaxDecoderBytes int64
 }
+
+// maxPixelsCap is the largest MaxPixels taken: a larger value is lowered to it, so that the
+// products of a pixel count with a byte cost cannot wrap an int64 (2^40 pixels is a million
+// times the default's reach of any decoder here).
+const maxPixelsCap = 1 << 40
 
 // DefaultLimits are the limits a zero Limits stands for.
 func DefaultLimits() Limits {
@@ -70,6 +77,9 @@ func (l Limits) withDefaults() Limits {
 	}
 	if l.MaxPixels <= 0 {
 		l.MaxPixels = d.MaxPixels
+	}
+	if l.MaxPixels > maxPixelsCap {
+		l.MaxPixels = maxPixelsCap
 	}
 	if l.MaxMemory <= 0 {
 		l.MaxMemory = d.MaxMemory

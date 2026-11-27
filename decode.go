@@ -550,7 +550,9 @@ func scanUnits(data []byte, cfg *hevcConfig, max int) error {
 				}
 				layouts[id] = l
 			}
-			// (the header parser has refused an address outside the picture)
+			if uint64(h.SegmentAddress) >= uint64(len(l.RsToTs)) {
+				return fmt.Errorf("%w: slice segment address %d outside the picture's %d blocks", ErrInvalid, h.SegmentAddress, len(l.RsToTs))
+			}
 			addr = int64(l.RsToTs[h.SegmentAddress])
 		}
 		if addr <= last {

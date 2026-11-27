@@ -47,6 +47,27 @@ func TestRound4MaxMemoryIsTheEstimate(t *testing.T) {
 	}
 }
 
+// A MaxPixels near 2^60 is lowered, so no product of a pixel count with a byte cost wraps an
+// int64 and lets a huge picture through MaxMemory.
+func TestRound4HugeMaxPixelsIsClamped(t *testing.T) {
+	defer guard(t)
+	for _, v := range []int64{1 << 40, 1<<40 + 1, 1 << 60, 1<<63 - 1} {
+		if got := (Limits{MaxPixels: v}).withDefaults().MaxPixels; got != maxPixelsCap {
+			t.Errorf("MaxPixels %d became %d, want %d", v, got, int64(maxPixelsCap))
+		}
+	}
+	if got := (Limits{MaxPixels: 1<<40 - 1}).withDefaults().MaxPixels; got != 1<<40-1 {
+		t.Errorf("MaxPixels below the cap changed to %d", got)
+	}
+	s := loadStream(t, "flat8192")
+	data := s.file(lp(append(s.rest, s.slice)...), 8192, 8192)
+	var err error
+	n := bombed(func() { _, err = DecodeOptions(bytes.NewReader(data), Options{Limits: Limits{MaxPixels: 1<<63 - 1}}) })
+	if !errors.Is(err, ErrImageTooLarge) || n > absoluteAlloc {
+		t.Errorf("8192x8192 at MaxPixels 2^63-1: %v after %d bytes, want MaxMemory's refusal", err, n)
+	}
+}
+
 // A grid holds the planes of one tile and of the assembled picture besides the result.
 func TestRound4MaxMemoryOfAGrid(t *testing.T) {
 	defer guard(t)

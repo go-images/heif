@@ -154,4 +154,11 @@ func TestTiledSegmentsAreOrderedInTileScan(t *testing.T) {
 	if err := scanUnits(lp(first), cfg, maxNALUnits); !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), "tiles") {
 		t.Errorf("a layout that fails: %v, want ErrCorrupt naming the tiles", err)
 	}
+	// an address past the layout is refused, not indexed (the parser has bounded it already)
+	newCtbLayout = func(h265.SPS, h265.PPS) (*h265.CtbLayout, error) {
+		return &h265.CtbLayout{RsToTs: []int32{0, 1}}, nil
+	}
+	if err := scanUnits(lp(first, at(2)), cfg, maxNALUnits); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "outside") {
+		t.Errorf("an address past the layout: %v, want ErrInvalid", err)
+	}
 }
