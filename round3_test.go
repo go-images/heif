@@ -175,7 +175,7 @@ func TestRound3PeakHeapOfATurnedPicture(t *testing.T) {
 	for name, props := range map[string][][]byte{"plain": nil, "turned": {irot(1)}} {
 		data := single(c, 8192, 8192, props...).bytes()
 		var err error
-		peaks[name] = peakHeap(func() { _, err = DecodeOptions(bytes.NewReader(data), Options{}) })
+		peaks[name] = peakHeap(func() { _, err = DecodeOptions(bytes.NewReader(data), Options{Limits: Limits{MaxMemory: 400 << 20}}) })
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}

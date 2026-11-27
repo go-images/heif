@@ -311,21 +311,56 @@ func newHevcConfig(id uint32, hp *property) (*hevcConfig, error) {
 // the item states (so a 1x1 ispe cannot buy a full-size decode before it is refused), and a
 // coded size over max is refused. The largest coded size of the sets is returned, since
 // the slice decides which of them applies.
-func (c *hevcConfig) codedPixels(id uint32, w, h uint32, max int64) (int64, error) {
+//
+// It also returns the largest cost in bytes of a pixel the sets state, in halves of a byte
+// for the planes (planeHalves) and in bytes for the converted result (resultBytes), which
+// codedWork turns into the memory of the decode.
+func (c *hevcConfig) codedPixels(id uint32, w, h uint32, max int64) (px int64, planeHalves, resultBytes int64, err error) {
 	// A set that does not parse costs nothing here: the decoder reads it with the same
 	// parser and refuses the stream.
 	var most uint64
 	for _, s := range c.sps {
 		if s.Width != w || s.Height != h {
-			return 0, fmt.Errorf("%w: item %d is %dx%d by its parameter set but states %dx%d", ErrInvalid, id, s.Width, s.Height, w, h)
+			return 0, 0, 0, fmt.Errorf("%w: item %d is %dx%d by its parameter set but states %dx%d", ErrInvalid, id, s.Width, s.Height, w, h)
 		}
-		if px := uint64(s.CodedWidth) * uint64(s.CodedHeight); px > uint64(max) {
-			return 0, fmt.Errorf("%w: item %d codes %dx%d pixels", ErrImageTooLarge, id, s.CodedWidth, s.CodedHeight)
-		} else if px > most {
-			most = px
+		if p := uint64(s.CodedWidth) * uint64(s.CodedHeight); p > uint64(max) {
+			return 0, 0, 0, fmt.Errorf("%w: item %d codes %dx%d pixels", ErrImageTooLarge, id, s.CodedWidth, s.CodedHeight)
+		} else if p > most {
+			most = p
 		}
+		ph, rb := sampleCost(s)
+		planeHalves, resultBytes = max64(planeHalves, ph), max64(resultBytes, rb)
 	}
-	return int64(most), nil
+	return int64(most), planeHalves, resultBytes, nil
+}
+
+func max64(a, b int64) int64 {
+	if b > a {
+		return b
+	}
+	return a
+}
+
+// sampleCost is what a pixel of the pictures of this SPS costs: halves of a byte in the
+// decoder's planes (a sample is one byte up to 8 bits and two above, and a pixel holds 1, 1.5,
+// 2 or 3 samples for 4:0:0, 4:2:0, 4:2:2 and 4:4:4), and bytes in the converted result
+// (1, 2, 4 or 8: grey or colour, 8 bits or more).
+func sampleCost(s h265.SPS) (planeHalves, resultBytes int64) {
+	wide := int64(1)
+	if s.BitDepthLuma > 8 || s.BitDepthChroma > 8 {
+		wide = 2
+	}
+	samples := int64(2) // in halves, 4:0:0
+	resultBytes = 1
+	switch s.ChromaFormat {
+	case 1:
+		samples, resultBytes = 3, 4
+	case 2:
+		samples, resultBytes = 4, 4
+	case 3:
+		samples, resultBytes = 6, 4
+	}
+	return samples * wide, resultBytes * wide
 }
 
 // codedWork is the pixels decoding the base image of a plan processes, read from the
@@ -362,7 +397,7 @@ func (f *file) codedWork(pl *plan, cfgs map[*item]*hevcConfig) (int64, error) {
 			w, h = sz.w, sz.h
 		}
 	}
-	var total int64
+	var total, tilePlanes, planeHalves, resultBytes int64
 	for _, it := range items {
 		hp, err := f.hvccOf(it)
 		if err != nil {
@@ -376,13 +411,25 @@ func (f *file) codedWork(pl *plan, cfgs map[*item]*hevcConfig) (int64, error) {
 			built[hp] = cfg
 		}
 		cfgs[it] = cfg
-		px, err := cfg.codedPixels(it.id, w, h, f.lim.MaxPixels)
+		px, ph, rb, err := cfg.codedPixels(it.id, w, h, f.lim.MaxPixels)
 		if err != nil {
 			return 0, err
 		}
 		if total += px; total > budget {
 			return 0, fmt.Errorf("%w: the pictures of %d items hold more than %d pixels", ErrImageTooLarge, len(items), budget)
 		}
+		tilePlanes = max64(tilePlanes, px*ph/2)
+		planeHalves, resultBytes = max64(planeHalves, ph), max64(resultBytes, rb)
+	}
+	// The memory alive at the peak: the planes of one picture (one decoder at a time), the
+	// planes of the whole grid when tiles are assembled, and the converted result.
+	out := int64(pl.w) * int64(pl.h)
+	mem := tilePlanes + out*resultBytes
+	if pl.grid != nil {
+		mem += out * planeHalves / 2
+	}
+	if mem > f.lim.MaxMemory {
+		return 0, fmt.Errorf("%w: decoding needs about %d MiB for %dx%d pixels, over Limits.MaxMemory (%d MiB)", ErrImageTooLarge, mem>>20, pl.w, pl.h, f.lim.MaxMemory>>20)
 	}
 	return total, nil
 }
@@ -422,6 +469,10 @@ func slicePPSID(u h265.Unit) (uint32, bool) {
 	return v - 1, true
 }
 
+// newCtbLayout is a seam for the tests: the header parser validates the same pair, so a
+// layout fails only if the two ever disagree.
+var newCtbLayout = h265.NewCtbLayout
+
 // scanUnits walks the length-prefixed NAL units of item data without keeping them. An item
 // is one access unit of coded slices: only slice segments, SEI and access unit delimiters
 // are allowed (a parameter set in the data would replace the hvcC's, and the decoder
@@ -432,10 +483,12 @@ func slicePPSID(u h265.Unit) (uint32, bool) {
 // the picture again must not cost memory or decoding time in proportion to a file that
 // states them by the million. A picture starts at a slice segment whose
 // first_slice_segment_in_pic_flag is set.
+
 func scanUnits(data []byte, cfg *hevcConfig, max int) error {
 	n, pictures := 0, 0
 	var prev *h265.SliceHeader // the last independent segment of the picture
-	last := int64(-1)          // the address of the segment before
+	last := int64(-1)          // the tile-scan address of the segment before
+	layouts := map[uint32]*h265.CtbLayout{}
 	for len(data) > 0 {
 		if len(data) < cfg.lengthSize {
 			return fmt.Errorf("%w: a unit length is cut short", ErrCorrupt)
@@ -483,11 +536,27 @@ func scanUnits(data []byte, cfg *hevcConfig, max int) error {
 		if err != nil {
 			return fmt.Errorf("%w: slice segment header: %w", ErrCorrupt, err)
 		}
-		// (the header parser has refused an address outside the picture)
-		if int64(h.SegmentAddress) <= last {
-			return fmt.Errorf("%w: slice segment at address %d after %d", ErrInvalid, h.SegmentAddress, last)
+		// The segments of a picture are in increasing order of CtbAddrRsToTs[address] (the
+		// tile scan of 6.5.1, which is the raster scan without tiles): with tiles the
+		// raster addresses of valid segments are not monotonic. The layout is built once
+		// for a parameter set, since building it for each segment would cost a picture's
+		// blocks each.
+		addr := int64(h.SegmentAddress)
+		if pps.TilesEnabled {
+			l := layouts[id]
+			if l == nil {
+				if l, err = newCtbLayout(sps, pps); err != nil {
+					return fmt.Errorf("%w: tiles: %w", ErrCorrupt, err)
+				}
+				layouts[id] = l
+			}
+			// (the header parser has refused an address outside the picture)
+			addr = int64(l.RsToTs[h.SegmentAddress])
 		}
-		last, prev = int64(h.SegmentAddress), &h
+		if addr <= last {
+			return fmt.Errorf("%w: slice segment at address %d after one at the same place or later in the picture's scan", ErrInvalid, h.SegmentAddress)
+		}
+		last, prev = addr, &h
 	}
 	return nil
 }

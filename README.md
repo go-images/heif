@@ -44,20 +44,29 @@ Input is untrusted. Every size is checked before anything is allocated from it.
 res, err := heif.DecodeOptions(r, heif.Options{Limits: heif.Limits{
 	MaxBytes:  64 << 20, // bytes read from r (default 256 MiB)
 	MaxPixels: 1 << 24,  // pixels of any picture, coded or output (default 1<<26)
+	MaxMemory: 256 << 20, // estimated bytes of a decode (default 320 MiB)
 }})
 ```
 
-`MaxPixels` is also the memory bound of a decode. The HEVC planes and the converted image are
-alive together, and a crop or rotation is written as the pixels are converted, with no copy
-of the unturned picture: 5.5 bytes a pixel live at the peak for an 8-bit 4:2:0 picture
-(measured heap, garbage included: 352 to 437 MiB for a flat 8192x8192 file of 17 KB with
-`irot`, against 608 MiB when the picture was converted and then turned), 14 for 16-bit 4:4:4 (6 for the planes, 8 for the result; 896 MiB
-at the default `1<<26`). Set `MaxPixels` to your budget divided by that figure.
+`MaxMemory` is the memory bound of a decode, checked from the SPS before any picture is
+decoded (`ErrImageTooLarge`; `DecodeWork` applies the same check). The estimate is the HEVC
+planes of the largest coded picture plus the converted result, which are alive together (a
+crop or rotation is written as the pixels are converted, with no copy of the unturned
+picture), and for a grid the assembled canvas as well: 6 bytes a pixel for 8-bit 4:2:0 (4 for
+the result, 2 for the planes), up to 14 for 16-bit 4:4:4. At the default 320 MiB a 48 MP
+8-bit 4:2:0 picture passes (about 256 MiB) and 16-bit 4:4:4 stops near 24 MP; an 8192x8192
+picture needs `MaxMemory` raised. Measured peak heap (garbage included) for a flat
+8192x8192 file of 17 KB with `MaxMemory` 400 MiB: 239 MiB plain, 380 MiB turned by `irot`;
+260 MiB for a 2x2 grid of 4096 tiles; 124 MiB for 8192x4320 at the default. The 16-bit 4:4:4
+figure is computed, not measured. `MaxPixels` still bounds the pixel count on its own.
 
 The coded size comes from the SPS of the `hvcC`, not from `ispe`: an item whose parameter set
 does not state the size its `ispe` does is refused before any picture is decoded, and
 `DecodeWork` reports the coded size (a picture cropped by its conformance window counts as the
 whole coded picture, and every tile of a grid counts, up to four times `MaxPixels`).
+
+The slice segments of a picture must be in increasing tile-scan order (CtbAddrRsToTs, H.265
+6.5.1; the raster order without tiles), otherwise `ErrInvalid`.
 
 `Limits` also bounds tiles, boxes, nesting depth, items and the decoder's memory
 (`MaxTiles`, `MaxBoxes`, `MaxDepth`, `MaxItems`, `MaxDecoderBytes`). A zero field takes the

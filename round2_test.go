@@ -105,6 +105,13 @@ func ctbsOf(sps h265.SPS) uint64 {
 // picture needs, so that an address past its last block is as writable as any other).
 func nonFirst(t testing.TB, nal []byte, sps h265.SPS, pps h265.PPS, addr uint64) []byte {
 	t.Helper()
+	return segmentAt(t, nal, sps, pps, addr, false, false)
+}
+
+// segmentAt is nonFirst, and also the first segment itself (first), and a header that states
+// no entry points (num_entry_point_offsets = 0, which a picture of tiles carries: tiled).
+func segmentAt(t testing.TB, nal []byte, sps h265.SPS, pps h265.PPS, addr uint64, first, tiled bool) []byte {
+	t.Helper()
 	u := unitOf(t, nal)
 	h, err := h265.ParseSliceSegmentHeaderFull(u, sps, pps, nil)
 	if err != nil {
@@ -121,23 +128,32 @@ func nonFirst(t testing.TB, nal []byte, sps h265.SPS, pps h265.PPS, addr uint64)
 	}
 	end := pos + 2*z + 1
 	var w bitw
-	w.put(0)
+	if first {
+		w.put(1)
+	} else {
+		w.put(0)
+	}
 	for i := 1; i < end; i++ {
 		w.put(getbit(un, i))
 	}
-	if pps.DependentSlicesEnabled {
-		w.put(0)
-	}
-	n := ctbsOf(sps)
-	bits := 0
-	for uint64(1)<<bits < n {
-		bits++
-	}
-	for i := bits - 1; i >= 0; i-- {
-		w.put(byte(addr >> i & 1))
+	if !first {
+		if pps.DependentSlicesEnabled {
+			w.put(0)
+		}
+		n := ctbsOf(sps)
+		bits := 0
+		for uint64(1)<<bits < n {
+			bits++
+		}
+		for i := bits - 1; i >= 0; i-- {
+			w.put(byte(addr >> i & 1))
+		}
 	}
 	for i := end; i < h.HeaderBits; i++ {
 		w.put(getbit(un, i))
+	}
+	if tiled {
+		w.put(1) // num_entry_point_offsets = ue(0)
 	}
 	w.put(1)
 	for w.n%8 != 0 {
@@ -590,20 +606,23 @@ func TestRound2ConfigurationBuiltOncePerProperty(t *testing.T) {
 	}
 }
 
-// The default limits hold what Limits says they hold: a single still of 8192x4320 and one
-// of 8192x8192 (MaxPixels) decode, in one picture's memory.
+// The default limits hold what Limits says they hold: a single still of 8192x4320 decodes
+// in one picture's memory; 8192x8192 (MaxPixels) needs 352 MiB, which is over MaxMemory, so it
+// is refused at the defaults before anything is decoded and decodes once MaxMemory allows it.
+// The time is a hang guard, not a measure: runners differ by a factor of fifty.
 func TestRound2LargeStillsAtTheDefaultLimits(t *testing.T) {
 	defer guard(t)
 	for _, tc := range []struct {
 		name string
 		w, h uint32
-	}{{"flat8192x4320", 8192, 4320}, {"flat8192", 8192, 8192}} {
+		mem  int64
+	}{{"flat8192x4320", 8192, 4320, 0}, {"flat8192", 8192, 8192, 400 << 20}} {
 		s := loadStream(t, tc.name)
 		var res *Result
 		var err error
 		start := time.Now()
 		peak := peakHeap(func() {
-			res, err = DecodeOptions(bytes.NewReader(s.file(lp(append(s.rest, s.slice)...), tc.w, tc.h)), Options{})
+			res, err = DecodeOptions(bytes.NewReader(s.file(lp(append(s.rest, s.slice)...), tc.w, tc.h)), Options{Limits: Limits{MaxMemory: tc.mem}})
 		})
 		t.Logf("%s: %v, peak %d MiB, %v", tc.name, time.Since(start), peak>>20, err)
 		if err != nil {
@@ -613,7 +632,7 @@ func TestRound2LargeStillsAtTheDefaultLimits(t *testing.T) {
 		if b := res.Image.Bounds(); b.Dx() != int(tc.w) || b.Dy() != int(tc.h) {
 			t.Errorf("%s: %v", tc.name, b)
 		}
-		if peak > 1<<30 || time.Since(start) > absoluteTime { // measured 233 MiB and 0.5 s at most
+		if peak > 400<<20 || time.Since(start) > 6*absoluteTime { // measured 233 MiB at most
 			t.Errorf("%s: peak %d MiB in %v", tc.name, peak>>20, time.Since(start))
 		}
 	}
